@@ -1,0 +1,551 @@
+/* ══════════════════════════════════════════════════════════════════
+   写作台 · 移动端与平板适配
+   ══════════════════════════════════════════════════════════════════
+
+   设计原则：
+   1. 手机是「能写、能读、能记灵感」的轻量形态，不是把桌面塞进小屏。
+   2. 侧栏与面板改为抽屉（overlay drawer），不再压缩成 0 宽 —— 后者
+      在 760px 下会让用户完全打不开稿件树，是坏体验。
+   3. 触摸目标 ≥ 44px（Apple HIG / Material 共同建议）。
+   4. 编辑器优先：手机上一进入就是正文，纸面占满可用宽度。
+   5. 底部导航替代桌面顶栏的次要入口，拇指可达。
+   6. 尊重安全区（iPhone 刘海 / 底部 Home Indicator）。
+
+   断点约定：
+     ≥ 1181px  桌面宽屏（三栏完整）
+     961–1180  桌面窄屏（三栏收窄）
+     ≤ 960     手机 / 平板竖屏（单栏 + 抽屉 + 底部导航）
+               —— 960 而不是 760：实测 820px 的 iPad Air 用三栏时
+                  编辑器只剩 262px，中文竖排一样挤，已无法写作。
+   ══════════════════════════════════════════════════════════════════ */
+
+/* ─────────────────────── 抽屉遮罩（仅移动端可见） ─────────────────────── */
+
+.drawer-scrim {
+  position: fixed;
+  /* 底部让出导航栏高度：抽屉打开时用户仍要能点底部导航切换/关闭，
+     否则点导航会被遮罩拦截（实测 drawer 打开后导航完全点不动）。 */
+  inset: 0 0 calc(52px + env(safe-area-inset-bottom, 0px)) 0;
+  z-index: 60;
+  background: rgba(31, 28, 23, 0.38);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-2) var(--ease);
+  -webkit-tap-highlight-color: transparent;
+}
+.app-shell.mobile-drawer-open .drawer-scrim {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* ─────────────────────── 底部导航（仅移动端） ─────────────────────── */
+
+.mobile-nav {
+  display: none;
+  position: relative;
+  /* 必须高于遮罩(60)：抽屉展开时导航仍需可点 */
+  z-index: 80;
+  height: calc(52px + env(safe-area-inset-bottom, 0px));
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  background: var(--paper-0);
+  border-top: 1px solid var(--paper-4);
+  align-items: stretch;
+  flex: none;
+}
+.mobile-nav-btn {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  min-width: 0;
+  padding: 6px 2px;
+  color: var(--ink-3);
+  font-size: 10px;
+  line-height: 1;
+  letter-spacing: 0.2px;
+  border: none;
+  background: none;
+  transition: color var(--dur-1) var(--ease), background var(--dur-1) var(--ease);
+  -webkit-tap-highlight-color: transparent;
+  position: relative;
+}
+.mobile-nav-btn svg {
+  width: 21px;
+  height: 21px;
+  stroke-width: 1.6;
+}
+.mobile-nav-btn:active {
+  background: var(--paper-3);
+}
+.mobile-nav-btn.active {
+  color: var(--accent);
+}
+/* 保存状态圆点：右上角小指示 */
+.mobile-nav-btn .mn-dot {
+  position: absolute;
+  top: 7px;
+  right: calc(50% - 16px);
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ink-4);
+}
+.mobile-nav-btn .mn-dot.dirty { background: var(--warn); }
+.mobile-nav-btn .mn-dot.error { background: var(--danger); }
+.mobile-nav-btn .mn-dot.saving { background: var(--info); animation: mn-pulse 1.1s ease-in-out infinite; }
+@keyframes mn-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   平板：761–960px
+   三栏保留但收窄；面板已由 app.css 的 960 断点处理
+   ══════════════════════════════════════════════════════════════════ */
+@media (max-width: 960px) and (min-width: 901px) {
+  .topbar {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: var(--sp-2);
+  }
+  .topbar-center {
+    display: none; /* 命令面板入口在窄屏让位给内容 */
+  }
+  /* 触摸目标放大 */
+  .icon-btn {
+    width: 34px;
+    height: 34px;
+  }
+  .icon-btn svg {
+    width: 18px;
+    height: 18px;
+  }
+  .tree-item {
+    min-height: 38px;
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   手机：≤ 760px
+   单栏 + 抽屉 + 底部导航
+   ══════════════════════════════════════════════════════════════════ */
+@media (max-width: 960px) {
+  /* ── 整体骨架：顶栏 / 工作区 / 状态栏 / 底部导航 ── */
+  .app-shell {
+    grid-template-rows: auto minmax(0, 1fr) auto auto;
+  }
+
+  /* ── 顶栏：压缩成单行，只留最必要的 ── */
+  .topbar {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-1);
+    height: 50px;
+    padding: 0 var(--sp-2);
+    padding-top: env(safe-area-inset-top, 0px);
+  }
+  .topbar-left,
+  .topbar-right {
+    gap: var(--sp-1);
+  }
+  .topbar-left {
+    flex: 1;
+    min-width: 0;
+  }
+  .topbar-center,
+  .goal-mini,
+  .save-ind .si-text,
+  .focus-btn,
+  .st-focus {
+    display: none !important;
+  }
+  /* 保存指示器缩成圆点，仍可见 */
+  .save-ind {
+    padding: 0;
+    width: 34px;
+    height: 34px;
+    justify-content: center;
+    border: none;
+    background: none;
+  }
+  .save-ind .dot {
+    width: 8px;
+    height: 8px;
+  }
+  .project-chip {
+    max-width: none;
+    flex: 1;
+    min-width: 0;
+    height: 34px;
+    padding-left: var(--sp-2);
+  }
+  .project-chip .proj-sub,
+  .project-chip .proj-caret {
+    display: none;
+  }
+  .project-chip .proj-title {
+    font-size: var(--fs-base);
+  }
+  /* 顶栏右侧的「面板」按钮在手机上由底部导航承担，隐藏避免重复 */
+  .topbar-right .icon-btn[title*="面板"],
+  .topbar-right .icon-btn[title*="专注"] {
+    display: none;
+  }
+  .icon-btn {
+    width: 36px;
+    height: 36px;
+  }
+  .icon-btn svg {
+    width: 19px;
+    height: 19px;
+  }
+
+  /* ── 工作区：单栏，编辑器占满 ── */
+  .workspace,
+  .app-shell.sidebar-closed .workspace,
+  .app-shell.inspector-closed .workspace,
+  .app-shell.sidebar-closed.inspector-closed .workspace {
+    grid-template-columns: minmax(0, 1fr);
+    position: relative;
+  }
+  /* 专注模式在手机上无意义（本来就是单栏），取消隐藏顶栏以免失去导航 */
+  .app-shell.focus-mode .topbar {
+    opacity: 1;
+    pointer-events: auto;
+    transform: none;
+  }
+  .app-shell.focus-mode .workspace {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* ── 侧栏 → 左侧抽屉 ── */
+  .sidebar {
+    position: fixed;
+    top: 0;
+    bottom: calc(52px + env(safe-area-inset-bottom, 0px));
+    left: 0;
+    z-index: 70;
+    width: min(84vw, 320px);
+    transform: translateX(-100%);
+    transition: transform var(--dur-3) var(--ease);
+    box-shadow: none;
+    border-right: 1px solid var(--paper-4);
+    padding-top: env(safe-area-inset-top, 0px);
+    will-change: transform;
+  }
+  .sidebar-inner {
+    width: 100%;
+  }
+  .app-shell.mobile-drawer-open.mobile-drawer-sidebar .sidebar {
+    transform: translateX(0);
+    box-shadow: var(--shadow-3);
+  }
+
+  /* ── 面板 → 右侧抽屉 ── */
+  .inspector {
+    position: fixed;
+    top: 0;
+    bottom: calc(52px + env(safe-area-inset-bottom, 0px));
+    right: 0;
+    z-index: 70;
+    width: min(88vw, 360px);
+    transform: translateX(100%);
+    transition: transform var(--dur-3) var(--ease);
+    box-shadow: none;
+    border-left: 1px solid var(--paper-4);
+    padding-top: env(safe-area-inset-top, 0px);
+    will-change: transform;
+  }
+  .inspector-inner {
+    width: 100%;
+  }
+  .app-shell.mobile-drawer-open.mobile-drawer-inspector .inspector {
+    transform: translateX(0);
+    box-shadow: var(--shadow-3);
+  }
+
+  /* 抽屉打开时编辑器不可滚动（避免背景跟着滚） */
+  .app-shell.mobile-drawer-open .editor-col {
+    overflow: hidden;
+    touch-action: none;
+  }
+
+  /* ── 编辑器：纸面贴合屏幕，去掉桌面的大边距 ── */
+  .editor-head {
+    padding-left: var(--sp-4);
+    padding-right: var(--sp-4);
+    min-height: 40px;
+  }
+  .editor-paper {
+    width: 100%;
+    max-width: none;
+    padding-left: var(--sp-4);
+    padding-right: var(--sp-4);
+    padding-top: var(--sp-4);
+    padding-bottom: 40vh; /* 打字时有留白，光标不贴底 */
+  }
+  .editor-surface {
+    font-size: 17px;
+    line-height: 1.85;
+    text-align: left;
+  }
+  /* 手机上段首缩进保留（中文阅读习惯），但只缩 2 字符 */
+  .editor-surface .para {
+    text-indent: var(--editor-indent, 0);
+  }
+
+  /* ── 状态栏：只留最必要的信息，加大可读性 ── */
+  .statusbar {
+    height: auto;
+    min-height: 26px;
+    padding: 0 var(--sp-3);
+    font-size: 11px;
+  }
+  .statusbar .st-mode,
+  .statusbar .st-total,
+  .statusbar .st-conn-text {
+    display: none;
+  }
+  .statusbar .st-scene {
+    font-size: 11px;
+  }
+
+  /* ── 底部导航显示 ── */
+  .mobile-nav {
+    display: flex;
+  }
+
+  /* ── 触摸目标与滚动体验 ── */
+  .tree-item {
+    min-height: 42px;
+    padding-top: 6px;
+    padding-bottom: 6px;
+  }
+  .tree-item .ti-title {
+    font-size: var(--fs-base);
+  }
+
+  /* ── 触摸目标：所有可点击元素 ≥ 40px（Apple HIG 建议 44，这里折中） ──
+     实测桌面尺寸下 27 个按钮高度在 16–28px，手指点不中。 */
+  .icon-btn,
+  /* 这些后代选择器在 app.css 里把尺寸写死了（24/26px），
+     单靠 .icon-btn 覆盖不了，必须用同权重选择器压过去。 */
+  .tree-head-actions .icon-btn,
+  .inspector-tabs .icon-btn,
+  .inspector-head .icon-btn,
+  .sidebar-head .icon-btn,
+  .topbar .icon-btn {
+    width: 40px;
+    height: 40px;
+    min-width: 40px;
+    min-height: 40px;
+    border-radius: var(--r-md);
+  }
+  .icon-btn svg,
+  .inspector-tabs .icon-btn svg,
+  .tree-head-actions .icon-btn svg {
+    width: 20px;
+    height: 20px;
+  }
+  /* 面板 tab 在手机上横向排布需要更多空间，改为可横向滚动 */
+  .inspector-tabs {
+    height: auto;
+    min-height: 46px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+    padding: 2px var(--sp-1);
+  }
+  .inspector-tabs::-webkit-scrollbar {
+    display: none;
+  }
+  /* 树头部与面板头部相应加高，避免按钮被裁切 */
+  .tree-head,
+  .sidebar-head,
+  .inspector-head {
+    min-height: 46px;
+  }
+  .foot-btn {
+    min-width: 40px;
+    min-height: 40px;
+    width: auto;
+    height: 40px;
+  }
+  /* 树节点的展开箭头：视觉上保持小巧，但扩大命中区 */
+  .tree-twisty {
+    position: relative;
+    width: 28px;
+    height: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .tree-twisty::after {
+    content: '';
+    position: absolute;
+    inset: -6px -8px;
+  }
+  /* 大纲/面板内的可点行 */
+  .p-outline-title {
+    min-height: 40px;
+    display: flex;
+    align-items: center;
+  }
+  .p-list-row {
+    min-height: 44px;
+  }
+  /* 状态栏的保存按钮：本来只是指示器，手机上允许点按重试 */
+  .st-item.st-save {
+    min-height: 24px;
+    padding: 2px 4px;
+  }
+  .panel-body {
+    -webkit-overflow-scrolling: touch;
+  }
+  .tree-scroll,
+  .panel-body,
+  .editor-scroll {
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+  }
+
+  /* 输入框在 iOS 上字号 <16px 会触发自动放大 */
+  .input,
+  .select,
+  .textarea,
+  input[type='text'],
+  input[type='number'],
+  input[type='search'] {
+    font-size: 16px;
+  }
+
+  /* 模态框改为底部弹出式（手机更好够到） */
+  .overlay {
+    padding-top: 0;
+    align-items: flex-end;
+  }
+  .modal {
+    width: 100%;
+    max-height: 88vh;
+    border-radius: var(--r-xl) var(--r-xl) 0 0;
+    animation: sheet-in var(--dur-3) var(--ease);
+  }
+  .modal-footer {
+    padding-bottom: calc(var(--sp-3) + env(safe-area-inset-bottom, 0px));
+  }
+  .cmdk {
+    width: 100%;
+    max-height: 82vh;
+    border-radius: var(--r-xl) var(--r-xl) 0 0;
+    animation: sheet-in var(--dur-3) var(--ease);
+  }
+  .cmdk-input {
+    font-size: 16px;
+  }
+  .cmdk-item {
+    padding: 11px var(--sp-3);
+  }
+  .cmdk-item .kbd {
+    display: none;
+  }
+
+  /* 全屏视图（设置）在手机上铺满 */
+  .fullview-inner {
+    padding-top: env(safe-area-inset-top, 0px);
+  }
+  .fullview-body {
+    padding-bottom: calc(var(--sp-5) + env(safe-area-inset-bottom, 0px));
+  }
+
+  /* toast 上移，避免被底部导航挡住 */
+  .toast-wrap {
+    bottom: calc(52px + env(safe-area-inset-bottom, 0px) + var(--sp-3));
+    left: var(--sp-3);
+    right: var(--sp-3);
+    transform: none;
+    align-items: stretch;
+  }
+  .toast {
+    max-width: none;
+  }
+}
+
+@keyframes sheet-in {
+  from {
+    transform: translateY(14px);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   超窄屏（≤ 380px）：iPhone SE 等
+   ══════════════════════════════════════════════════════════════════ */
+@media (max-width: 380px) {
+  .topbar {
+    padding: 0 var(--sp-1);
+  }
+  .project-chip .proj-title {
+    font-size: var(--fs-md);
+  }
+  .editor-paper {
+    padding-left: var(--sp-3);
+    padding-right: var(--sp-3);
+  }
+  .mobile-nav-btn {
+    font-size: 9px;
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   横屏手机（高度受限）：压缩纵向占用
+   ══════════════════════════════════════════════════════════════════ */
+@media (max-width: 900px) and (max-height: 480px) and (orientation: landscape) {
+  .topbar {
+    height: 40px;
+  }
+  .mobile-nav {
+    height: 44px;
+  }
+  .statusbar {
+    display: none;
+  }
+  .editor-paper {
+    padding-bottom: 20vh;
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   指针粗糙（触摸设备）的通用增强
+   ══════════════════════════════════════════════════════════════════ */
+@media (pointer: coarse) {
+  /* 触摸设备没有 hover，去掉依赖 hover 的交互残留 */
+  .btn:hover,
+  .icon-btn:hover {
+    background: initial;
+  }
+  /* 拖拽排序在触摸上不可靠，改用菜单操作（tree.ts 已提供右键菜单，
+     移动端由长按触发；这里只隐藏拖拽把手） */
+  .tree-item .ti-drag {
+    display: none;
+  }
+  /* 加大所有列表项的最小高度 */
+  .cmdk-item,
+  .p-list-row {
+    min-height: 40px;
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   打印：移动端适配不影响打印样式
+   ══════════════════════════════════════════════════════════════════ */
+@media print {
+  .mobile-nav,
+  .drawer-scrim {
+    display: none !important;
+  }
+}

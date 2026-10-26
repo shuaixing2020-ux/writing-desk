@@ -1,0 +1,21 @@
+# 依赖与构建产物
+node_modules/
+web/dist/
+data/
+.tmp/
+*.log
+
+# 系统
+.DS_Store
+Thumbs.db
+
+# 编辑器
+.vscode/
+.idea/
+
+# 测试产物
+tests/e2e/*.png
+coverage/
+
+# 作品运行时（如果作品放在仓库内）
+**/.studio/

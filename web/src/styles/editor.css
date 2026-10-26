@@ -1,0 +1,404 @@
+/* ══════════════════════════════════════════════════════════════════
+   写作台 · 编辑器排版
+   ──────────────────────────────────────────────────────────────────
+   设计原则：
+     1. 纸面是最高层（--paper-0），四周是退后的面板，视觉焦点永远在字上
+     2. 一切尺寸都从 CSS 变量来，设置面板改一个变量，正文立刻重排
+     3. 不做过渡动画（打字时任何动画都会让文字抖动）
+   ══════════════════════════════════════════════════════════════════ */
+
+.editor-root {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  background: var(--paper-0);
+  overflow: hidden;
+}
+
+/* ─────────────────────── 头部（面包屑 + 标题） ─────────────────────── */
+
+.editor-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--sp-3) clamp(var(--sp-4), 6vw, 96px) var(--sp-2);
+  flex: none;
+  border-bottom: 1px solid transparent;
+  transition: border-color var(--dur-2) var(--ease);
+  z-index: 5;
+}
+.editor-head.hidden {
+  display: none;
+}
+
+.editor-crumbs {
+  font-size: var(--fs-xs);
+  color: var(--ink-4);
+  letter-spacing: 0.2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-height: 15px;
+}
+
+.editor-title {
+  width: 100%;
+  padding: 2px 0;
+  border: none;
+  border-bottom: 1px solid transparent;
+  background: transparent;
+  font-family: var(--font-read);
+  font-size: var(--fs-xl);
+  font-weight: 600;
+  color: var(--ink-1);
+  letter-spacing: 0.01em;
+  outline: none;
+  transition: border-color var(--dur-1) var(--ease);
+}
+.editor-title:hover {
+  border-bottom-color: var(--paper-4);
+}
+.editor-title:focus {
+  border-bottom-color: var(--accent);
+}
+.editor-title::placeholder {
+  color: var(--ink-4);
+  font-weight: 400;
+}
+
+.editor-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  height: 20px;
+}
+.status-select {
+  height: 20px;
+  padding: 0 18px 0 6px;
+  border: 1px solid var(--paper-4);
+  border-radius: 99px;
+  background: var(--paper-2);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%236f6862' stroke-width='1.7' stroke-linecap='round'%3E%3Cpath d='M4 6l4 4 4-4'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 4px center;
+  background-size: 10px;
+  color: var(--ink-3);
+  font-size: var(--fs-xs);
+  appearance: none;
+  cursor: pointer;
+  transition: border-color var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+}
+.status-select:hover {
+  border-color: var(--ink-4);
+  color: var(--ink-1);
+}
+.status-select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+.status-select.status-draft {
+  color: var(--info);
+  border-color: color-mix(in srgb, var(--info) 30%, transparent);
+  background-color: var(--info-soft);
+}
+.status-select.status-revising {
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 30%, transparent);
+  background-color: var(--warn-soft);
+}
+.status-select.status-final {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 30%, transparent);
+  background-color: var(--ok-soft);
+}
+.status-select.status-published {
+  color: var(--accent-ink);
+  border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+  background-color: var(--accent-soft);
+}
+
+.em-item {
+  font-size: var(--fs-xs);
+  color: var(--ink-4);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.em-words {
+  margin-left: auto;
+}
+
+/* ─────────────────────── 纸面 ─────────────────────── */
+
+.editor-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scroll-behavior: auto;
+  overscroll-behavior: contain;
+}
+
+.editor-paper {
+  width: min(var(--editor-measure), calc(100% - clamp(2rem, 12vw, 12rem)));
+  margin: 0 auto;
+  padding: var(--sp-5) 0 40vh;
+  min-height: 100%;
+  position: relative;
+}
+
+/* contenteditable 的聚焦轮廓：纸面本身不该有框 */
+.editor-surface {
+  outline: none;
+  font-family: var(--editor-font);
+  font-size: var(--editor-font-size);
+  line-height: var(--editor-line-height);
+  color: var(--ink-1);
+  letter-spacing: 0.01em;
+  text-align: justify;
+  text-justify: inter-ideograph;
+  word-break: break-word;
+  overflow-wrap: break-word;
+  caret-color: var(--accent);
+  min-height: 40vh;
+  white-space: pre-wrap;
+  tab-size: 2;
+  -webkit-font-smoothing: antialiased;
+  -webkit-user-modify: read-write-plaintext-only;
+}
+
+/* 段落：版心内的基本单位 */
+.editor-surface .para {
+  margin: 0 0 var(--editor-paragraph-gap);
+  text-indent: var(--editor-indent);
+  min-height: 1em;
+  position: relative;
+}
+.editor-surface .para:last-child {
+  margin-bottom: 0;
+}
+
+/* 段落之间的空行（用户敲了两个回车）：用占位高度让空段落可见、可点 */
+.editor-surface .para:empty::before {
+  content: '';
+  display: inline-block;
+}
+
+/* 首段不缩进（中文排版惯例：段首缩进从第二段开始，或全书统一）
+   这里跟随设置：--editor-indent 为 0 时全部不缩进，>0 时全部缩进 */
+.editor-surface .para:first-child {
+  text-indent: var(--editor-indent);
+}
+
+/* 占位提示：空文档时显示引导，而不是一片空白 */
+.editor-surface.is-empty::before {
+  content: attr(data-placeholder);
+  position: absolute;
+  color: var(--ink-4);
+  pointer-events: none;
+  font-family: var(--font-ui);
+  font-size: var(--fs-base);
+  letter-spacing: 0.02em;
+  line-height: var(--editor-line-height);
+  text-indent: 0;
+}
+
+/* 输入法组字中：轻微下划线提示，避免作者以为输入法没生效 */
+.editor-surface.composing .para {
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 4px;
+}
+
+/* 命中定位的短暂高亮（检查结果 / 搜索跳转） */
+.editor-surface .para.reveal-flash {
+  animation: reveal-flash 1.4s var(--ease);
+  border-radius: 3px;
+}
+@keyframes reveal-flash {
+  0% {
+    background: color-mix(in srgb, var(--accent) 26%, transparent);
+  }
+  60% {
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+  }
+  100% {
+    background: transparent;
+  }
+}
+
+/* 纸面底部留白：让最后一行也能滚到舒服的位置 */
+.editor-end {
+  height: 1px;
+}
+
+/* ─────────────────────── 打字机模式 ─────────────────────── */
+
+/* 光标行居中由 JS 滚动实现；这里只做视觉上的“上下留白” */
+.editor-root.typewriter .editor-paper {
+  padding-bottom: 60vh;
+}
+.editor-root.typewriter .editor-scroll {
+  scroll-behavior: smooth;
+}
+
+/* ─────────────────────── 空状态 ─────────────────────── */
+
+.editor-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  padding: var(--sp-6);
+  background: var(--paper-0);
+  color: var(--ink-4);
+  text-align: center;
+}
+.editor-empty.hidden {
+  display: none;
+}
+.empty-illustration {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 64px;
+  margin-bottom: var(--sp-3);
+  border-radius: 50%;
+  background: var(--paper-2);
+  color: var(--ink-4);
+}
+.empty-illustration svg {
+  width: 26px;
+  height: 26px;
+  stroke-width: 1.3;
+}
+.empty-title {
+  font-size: var(--fs-lg);
+  color: var(--ink-2);
+  font-weight: 500;
+}
+.empty-hint {
+  font-size: var(--fs-md);
+  line-height: 1.8;
+  color: var(--ink-4);
+  max-width: 34em;
+}
+.empty-hint kbd {
+  margin: 0 2px;
+}
+
+/* 容器节点（卷/章）没有正文时的提示 */
+.editor-root.is-container-doc .editor-surface {
+  color: var(--ink-4);
+}
+.editor-root.is-container-doc .editor-surface::before {
+  content: '卷和章是容器，正文写在场景里。在左侧选中一个场景，或新建一个。';
+  position: static;
+  display: block;
+  font-family: var(--font-ui);
+  font-size: var(--fs-base);
+  line-height: 1.9;
+  color: var(--ink-4);
+}
+
+/* ─────────────────────── 专注模式 ─────────────────────── */
+
+.app-shell.focus-mode .editor-head {
+  padding-left: max(var(--sp-5), 8vw);
+  padding-right: max(var(--sp-5), 8vw);
+}
+.app-shell.focus-mode .editor-paper {
+  width: min(var(--editor-measure), calc(100% - 4rem));
+}
+.app-shell.focus-mode .editor-col::after {
+  /* 专注模式下的极淡暗角，把注意力收拢到纸面 */
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(
+    ellipse at center,
+    transparent 55%,
+    color-mix(in srgb, var(--ink-1) 4%, transparent) 100%
+  );
+}
+
+/* ─────────────────────── 选中 / 高亮 ─────────────────────── */
+
+.editor-surface ::selection {
+  background: var(--accent-soft);
+  color: var(--ink-1);
+}
+
+/* 段落悬停时左侧的极淡引导线：帮助在长文里定位段落，但不干扰阅读 */
+.editor-surface .para::after {
+  content: '';
+  position: absolute;
+  left: calc(-1 * var(--sp-3));
+  top: 0.35em;
+  bottom: 0.35em;
+  width: 2px;
+  border-radius: 2px;
+  background: transparent;
+  transition: background var(--dur-2) var(--ease);
+  pointer-events: none;
+}
+.editor-surface .para:hover::after {
+  background: var(--paper-4);
+}
+
+/* ─────────────────────── 打印 / 导出预览 ─────────────────────── */
+
+@media print {
+  .topbar,
+  .sidebar,
+  .inspector,
+  .statusbar,
+  .editor-head {
+    display: none !important;
+  }
+  .workspace,
+  .app-shell {
+    display: block;
+    height: auto;
+  }
+  .editor-col,
+  .editor-root,
+  .editor-scroll {
+    overflow: visible;
+    height: auto;
+  }
+  .editor-paper {
+    width: 100%;
+    padding: 0;
+  }
+  .editor-surface {
+    font-size: 12pt;
+    line-height: 1.8;
+    text-align: justify;
+  }
+}
+
+/* ─────────────────────── 窄屏 ─────────────────────── */
+
+@media (max-width: 760px) {
+  .editor-head {
+    padding-left: var(--sp-4);
+    padding-right: var(--sp-4);
+  }
+  .editor-paper {
+    width: calc(100% - var(--sp-5) * 2);
+  }
+  .editor-surface {
+    text-align: left;
+  }
+}

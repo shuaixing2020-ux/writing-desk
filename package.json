@@ -1,0 +1,37 @@
+{
+  "name": "writing-desk",
+  "version": "1.0.0",
+  "private": true,
+  "description": "写作台 · 本地优先的小说写作工作台（文本即真相 + 可重建索引）",
+  "type": "module",
+  "engines": {
+    "node": ">=22.6.0"
+  },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning server/main.ts",
+    "dev": "node --disable-warning=ExperimentalWarning --watch server/main.ts",
+    "build": "node --disable-warning=ExperimentalWarning scripts/build-web.mjs",
+    "build:watch": "node --disable-warning=ExperimentalWarning scripts/build-web.mjs --watch",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node --disable-warning=ExperimentalWarning --test tests/unit/*.test.ts",
+    "test:e2e": "node --disable-warning=ExperimentalWarning tests/e2e/run-e2e.mjs",
+    "serve": "node --disable-warning=ExperimentalWarning scripts/start.mjs",
+    "selfcheck": "node --disable-warning=ExperimentalWarning scripts/selfcheck.mjs",
+    "seed": "node --disable-warning=ExperimentalWarning scripts/seed-demo.mjs"
+  },
+  "dependencies": {
+    "@fastify/static": "^8.2.0",
+    "@fastify/websocket": "^11.2.0",
+    "diff-match-patch": "^1.0.5",
+    "docx": "^9.14.0",
+    "fastify": "^5.12.7",
+    "marked": "^18.1.2"
+  },
+  "devDependencies": {
+    "@types/diff-match-patch": "^1.0.36",
+    "@types/node": "^24.0.0",
+    "esbuild": "^0.25.0",
+    "playwright": "^1.64.1",
+    "typescript": "^5.9.0"
+  }
+}

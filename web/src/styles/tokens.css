@@ -1,0 +1,136 @@
+/* ══════════════════════════════════════════════════════════════════
+   写作台 · 设计令牌
+   纸张感的暖色底 + 墨色文字 + 一个克制的强调色。
+   目标：长时间盯稿不刺眼，字是主角，界面退到后面。
+   ══════════════════════════════════════════════════════════════════ */
+
+:root {
+  /* ─── 中性色：暖纸色系（不是纯灰，纯灰在长时间阅读下会发蓝发冷） ─── */
+  --paper-0: #fdfcfa;   /* 最高层：编辑器纸面 */
+  --paper-1: #f8f6f2;   /* 应用底 */
+  --paper-2: #f2efe9;   /* 面板底 */
+  --paper-3: #eae6de;   /* 悬停 */
+  --paper-4: #ded9cf;   /* 分隔线/边框 */
+
+  --ink-1: #1f1c17;     /* 标题、正文 */
+  --ink-2: #46403a;     /* 次级文字 */
+  --ink-3: #6f6862;     /* 说明文字 */
+  --ink-4: #9a938b;     /* 占位、禁用 */
+
+  /* ─── 强调色：赭石（呼应"墨"与"纸"，不用 SaaS 蓝） ─── */
+  --accent: #a8481f;
+  --accent-hover: #8e3b17;
+  --accent-soft: #f5e6dd;
+  --accent-ink: #7a3313;
+
+  /* ─── 语义色 ─── */
+  --ok: #3f7d4e;
+  --ok-soft: #e6f0e8;
+  --warn: #a8730f;
+  --warn-soft: #f8efdc;
+  --danger: #a83232;
+  --danger-soft: #f7e5e5;
+  --info: #3d6b8e;
+  --info-soft: #e5eef4;
+
+  /* ─── 排版 ─── */
+  --font-ui: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", "Segoe UI", sans-serif;
+  --font-read: "Songti SC", "STSong", "Source Han Serif SC", "Noto Serif CJK SC",
+    "SimSun", Georgia, serif;
+  --font-mono: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-md: 13px;
+  --fs-base: 14px;
+  --fs-lg: 16px;
+  --fs-xl: 20px;
+  --fs-2xl: 26px;
+
+  /* ─── 间距 ─── */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+
+  /* ─── 圆角与阴影 ─── */
+  --r-sm: 4px;
+  --r-md: 6px;
+  --r-lg: 10px;
+  --r-xl: 14px;
+
+  --shadow-1: 0 1px 2px rgba(31, 28, 23, 0.06);
+  --shadow-2: 0 2px 8px rgba(31, 28, 23, 0.08);
+  --shadow-3: 0 8px 28px rgba(31, 28, 23, 0.14);
+  --shadow-pop: 0 12px 40px rgba(31, 28, 23, 0.18);
+
+  /* ─── 动效 ─── */
+  --ease: cubic-bezier(0.32, 0.72, 0, 1);
+  --dur-1: 120ms;
+  --dur-2: 200ms;
+  --dur-3: 320ms;
+
+  /* ─── 布局尺寸 ─── */
+  --rail-w: 48px;
+  --sidebar-w: 260px;
+  --inspector-w: 300px;
+  --topbar-h: 46px;
+  --statusbar-h: 28px;
+
+  /* 编辑器可调（设置面板会覆盖这些变量） */
+  --editor-font-size: 17px;
+  --editor-line-height: 1.9;
+  --editor-measure: 34em;
+  --editor-paragraph-gap: 0.85em;
+  --editor-indent: 0em;
+  --editor-font: var(--font-read);
+}
+
+/* ─── 夜间主题 ─── */
+[data-theme="dark"] {
+  --paper-0: #1c1a18;
+  --paper-1: #14120f;
+  --paper-2: #211e1a;
+  --paper-3: #2b2723;
+  --paper-4: #3a3530;
+
+  --ink-1: #e8e3da;
+  --ink-2: #bdb6ac;
+  --ink-3: #8d867c;
+  --ink-4: #6a645c;
+
+  --accent: #d4764a;
+  --accent-hover: #e08a5f;
+  --accent-soft: #3a2519;
+  --accent-ink: #f0a887;
+
+  --ok: #6aa87a;
+  --ok-soft: #1e2e22;
+  --warn: #c99a3f;
+  --warn-soft: #332a17;
+  --danger: #cf6b6b;
+  --danger-soft: #35201f;
+  --info: #6b9ab8;
+  --info-soft: #1b2830;
+
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-2: 0 2px 8px rgba(0, 0, 0, 0.35);
+  --shadow-3: 0 8px 28px rgba(0, 0, 0, 0.5);
+  --shadow-pop: 0 12px 40px rgba(0, 0, 0, 0.6);
+}
+
+/* 护眼纸（暖黄） */
+[data-theme="sepia"] {
+  --paper-0: #f7efdc;
+  --paper-1: #f2e8d2;
+  --paper-2: #ece0c6;
+  --paper-3: #e3d5b7;
+  --paper-4: #d5c5a3;
+  --ink-1: #2e2619;
+  --ink-2: #4a3f2c;
+  --ink-3: #6d604a;
+  --ink-4: #91836a;
+}
