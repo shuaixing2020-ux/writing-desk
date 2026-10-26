@@ -5,7 +5,7 @@
   "description": "写作台 · 本地优先的小说写作工作台（文本即真相 + 可重建索引）",
   "type": "module",
   "engines": {
-    "node": ">=22.6.0"
+    "node": ">=22.18.0"
   },
   "scripts": {
     "start": "node --disable-warning=ExperimentalWarning server/main.ts",

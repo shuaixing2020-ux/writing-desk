@@ -19,6 +19,7 @@ import { JobQueue } from './util/job-queue.ts';
 import { ProjectStore } from './store/project.ts';
 import { IndexDb } from './db/index.ts';
 import { IndexerService } from './services/indexer.ts';
+import { BackupScheduler } from './services/backup-scheduler.ts';
 import { SnapshotService } from './services/snapshot.ts';
 import { BackupService } from './services/backup.ts';
 import { LintService } from './services/lint.ts';
@@ -39,6 +40,8 @@ export interface AppContextImpl extends AppContext {
 export function createAppContext(dataDir: string): AppContextImpl {
   /** 已打开作品（对路由可见的活引用，不要替换这个 Map 实例） */
   const projects = new Map<string, ProjectContext>();
+  /** 每个打开的作品一个备份调度器，关闭作品时要一起停掉 */
+  const backupSchedulers = new Map<string, BackupScheduler>();
   /** 打开中的作品：并发请求同一作品时只真正打开一次 */
   const opening = new Map<string, Promise<ProjectContext>>();
   const jobs = new JobQueue();
@@ -141,7 +144,13 @@ export function createAppContext(dataDir: string): AppContextImpl {
 
     opening.set(id, task);
     try {
-      return await task;
+      const ctx = await task;
+      // 定时备份：按每个目标的 interval_min 自动运行。
+      // 放在 openProject 成功后启动，保证 ctx 已完全装配。
+      const scheduler = new BackupScheduler(ctx, jobs);
+      scheduler.start();
+      backupSchedulers.set(id, scheduler);
+      return ctx;
     } finally {
       opening.delete(id);
     }
@@ -151,6 +160,9 @@ export function createAppContext(dataDir: string): AppContextImpl {
     const ctx = projects.get(id);
     if (!ctx) return;
     projects.delete(id);
+    // 先停调度器，避免关闭过程中又提交新的备份作业
+    backupSchedulers.get(id)?.stop();
+    backupSchedulers.delete(id);
     try {
       // SQLite 的 WAL 在 close 时落盘；不 close 会留下 -wal 文件
       ctx.index.close();

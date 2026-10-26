@@ -11,6 +11,7 @@
  */
 
 import { promises as fs } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
@@ -361,8 +362,10 @@ async function main(): Promise<void> {
   const projects = await listProjectSummaries(dataDir, appCtx);
   const totalWords = projects.reduce((sum, p) => sum + p.word_count, 0);
 
-  const displayHost = lan ? '127.0.0.1' : '127.0.0.1';
-  const url = `http://${displayHost}:${port}`;
+  // 局域网模式下要打印「手机真正能访问的地址」，否则用户只知道 127.0.0.1，
+  // 在手机上打不开也不知道该输什么。这里取本机的内网 IPv4。
+  const lanAddrs = lan ? listLanAddresses() : [];
+  const url = `http://127.0.0.1:${port}`;
 
   console.log('');
   console.log('  写作台 · 本地优先的小说写作工作台');
@@ -374,6 +377,16 @@ async function main(): Promise<void> {
   console.log(`  稿件格式   Markdown + frontmatter，可直接用任何编辑器打开`);
   console.log('  ─────────────────────────────────────');
   if (lan) {
+    console.log('');
+    if (lanAddrs.length > 0) {
+      console.log('  手机访问（同一 Wi-Fi 下打开下面任一地址）：');
+      for (const addr of lanAddrs) {
+        console.log(`    http://${addr}:${port}`);
+      }
+    } else {
+      console.log('  手机访问：未检测到内网 IPv4 地址，请确认已连接 Wi-Fi 或有线网络。');
+      console.log(`  也可手动用本机内网 IP 访问，端口 ${port}。`);
+    }
     console.log('');
     console.log('  ⚠ 局域网模式已开启：同一网络内的任何设备都能访问本服务。');
     console.log('    本工具没有登录与权限校验，任何能连上的人都能读写你的全部稿件。');
@@ -419,4 +432,30 @@ function formatNum(n: number): string {
 const isMain = process.argv[1] ? path.resolve(process.argv[1]) === fileURLToPath(import.meta.url) : false;
 if (isMain) {
   void main();
+}
+
+/**
+ * 列出本机可用的内网 IPv4 地址，供局域网模式打印手机可访问的 URL。
+ *
+ * 过滤掉回环与链路本地地址（169.254.x.x），并优先返回私有网段：
+ * 家用 Wi-Fi 基本都是 192.168 / 10 / 172.16-31 这三段。
+ */
+function listLanAddresses(): string[] {
+  const out: Array<{ addr: string; isPrivate: boolean; iface: string }> = [];
+  for (const [iface, addrs] of Object.entries(os.networkInterfaces())) {
+    for (const info of addrs ?? []) {
+      if (info.family !== 'IPv4' || info.internal) continue;
+      if (info.address.startsWith('169.254.')) continue; // 链路本地，手机连不上
+      const isPrivate =
+        info.address.startsWith('192.168.') ||
+        info.address.startsWith('10.') ||
+        /^172\.(1[6-9]|2\d|3[01])\./.test(info.address);
+      out.push({ addr: info.address, isPrivate, iface });
+    }
+  }
+  // 私有网段排前面：公网 IP 虽然也能连，但不是家用场景的主要答案
+  out.sort((a, b) => Number(b.isPrivate) - Number(a.isPrivate));
+  // 去重（有些系统同一地址出现在多个接口上）
+  const seen = new Set<string>();
+  return out.filter((x) => (seen.has(x.addr) ? false : (seen.add(x.addr), true))).map((x) => x.addr);
 }

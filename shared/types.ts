@@ -538,4 +538,10 @@ export interface SaveSceneResponse {
   word_count: number;
   /** 若发生冲突，返回冲突副本信息 */
   conflict?: { snapshot_id: string; message: string };
+  /**
+   * 项目开启「标点自动规整」且本次保存确实改动了标点时，
+   * 返回规整后的正文。前端必须用它同步编辑器显示，
+   * 否则作者看到的内容与磁盘不一致，下次保存会把规整结果覆盖回去。
+   */
+  body?: string;
 }

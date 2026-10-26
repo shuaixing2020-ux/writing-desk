@@ -420,17 +420,31 @@ async function main(): Promise<void> {
 
     try {
       const res = await api.saveScene(doc.id, body, rev);
-      savedBody = body;
-      dirtyBody = editor.getValue() === body ? null : editor.getValue();
-      editor.markSaved(body);
+
+      // 服务端可能应用了标点规整（项目开启 auto_punct 时）。
+      // 必须把规整结果同步回编辑器，否则作者看到的是规整前的文本，
+      // 下次保存又会把它覆盖回去，形成「改了又没改」的循环。
+      let finalBody = body;
+      if (res.body && res.body !== body) {
+        finalBody = res.body;
+        // 仅当作者在这段时间内没有继续输入时才覆盖，避免打断正在写的人
+        if (editor.getValue() === body) {
+          editor.setValue(finalBody);
+          toast('已按项目设置规整标点', 'ok', 1600);
+        }
+      }
+
+      savedBody = finalBody;
+      dirtyBody = editor.getValue() === finalBody ? null : editor.getValue();
+      editor.markSaved(finalBody);
       draftCache.clear(projectId, doc.id);
       clearRetry();
       retryCount = 0;
 
       // 更新场景与树节点上的字数，避免为了一次保存去重拉整棵树
-      const wordCount = countWords(body, store.state.project?.count_mode ?? 'hanzi');
+      const wordCount = countWords(finalBody, store.state.project?.count_mode ?? 'hanzi');
       const scene: SceneContent | null = store.state.scene
-        ? { ...store.state.scene, rev: res.rev, hash: res.hash, updated_at: res.updated_at, body }
+        ? { ...store.state.scene, rev: res.rev, hash: res.hash, updated_at: res.updated_at, body: finalBody }
         : null;
       const nodes = store.state.nodes.map((n) =>
         n.id === doc.id ? { ...n, word_count: wordCount, rev: res.rev, hash: res.hash, updated_at: res.updated_at } : n,

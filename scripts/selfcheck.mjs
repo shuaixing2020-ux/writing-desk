@@ -452,6 +452,109 @@ async function main() {
       throw new Error('导出超时');
     });
 
+    await check('标点自动规整（开启后保存生效）', async () => {
+      // 默认关闭时应原样保存
+      const before = await (await fetch(`${BASE}/api/projects/${projectId}/meta`)).json();
+      if (before.auto_punct) {
+        await fetch(`${BASE}/api/projects/${projectId}/meta`, {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ auto_punct: false }),
+        });
+      }
+      const rawBody = '他说...然后走了！！！';
+      const save1 = await fetch(`${BASE}/api/projects/${projectId}/scenes/${sceneId}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ body: rawBody, base_rev: 0 }),
+      });
+      const r1 = await save1.json();
+      const got1 = await (await fetch(`${BASE}/api/projects/${projectId}/scenes/${sceneId}`)).json();
+      assert(got1.body === rawBody, `关闭时不应改动，实际 ${JSON.stringify(got1.body)}`);
+
+      // 开启后应规整
+      await fetch(`${BASE}/api/projects/${projectId}/meta`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ auto_punct: true }),
+      });
+      const save2 = await fetch(`${BASE}/api/projects/${projectId}/scenes/${sceneId}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ body: rawBody, base_rev: r1.rev }),
+      });
+      const r2 = await save2.json();
+      const got2 = await (await fetch(`${BASE}/api/projects/${projectId}/scenes/${sceneId}`)).json();
+      assert(got2.body.includes('……'), `省略号未规整：${JSON.stringify(got2.body)}`);
+      assert(got2.body.includes('走了！') && !got2.body.includes('！！！'), '重复感叹号未折叠');
+      assert(r2.body === got2.body, '响应未回传规整结果（前端无法同步）');
+
+      // 幂等：再存一次不应再变化
+      const save3 = await fetch(`${BASE}/api/projects/${projectId}/scenes/${sceneId}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ body: got2.body, base_rev: r2.rev }),
+      });
+      const r3 = await save3.json();
+      assert(r3.body === undefined, '已规整内容再次保存不应回传 body（说明不幂等）');
+
+      // 恢复关闭状态，避免影响后续检查
+      await fetch(`${BASE}/api/projects/${projectId}/meta`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ auto_punct: false }),
+      });
+      return '关闭时不动、开启后规整、幂等';
+    });
+
+    await check('备份管线可用（含目录安全校验）', async () => {
+      // 备份目录必须放在数据目录之外（服务端会拒绝数据目录内的路径，
+      // 这是防止备份把自己套娃进项目里的保护）。这里单独建临时目录。
+      const backupDir = await fs.mkdtemp(path.join(os.tmpdir(), 'wd-selfcheck-backup-'));
+
+      // 先验证保护生效：数据目录内的路径必须被拒绝
+      const badRes = await fetch(`${BASE}/api/projects/${projectId}/backup`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ dir: path.join(dataDir, '_should_reject'), enabled: true }),
+      });
+      assert(badRes.status === 400, `数据目录内的备份路径应被拒绝，实际 HTTP ${badRes.status}`);
+
+      const res = await fetch(`${BASE}/api/projects/${projectId}/backup`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ dir: backupDir, enabled: true, keep: 2, interval_min: 1 }),
+      });
+      assert(res.status === 200, `创建备份目标失败 HTTP ${res.status}`);
+      const target = await res.json();
+      assert(target.id, '未返回目标 id');
+
+      // 手动触发一次，确认备份管线可用（调度器本身按 60s tick，自检不等它）
+      const run = await fetch(`${BASE}/api/projects/${projectId}/backup/run`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ target_id: target.id }),
+      });
+      assert(run.status === 200, `触发备份失败 HTTP ${run.status}`);
+      const job = await run.json();
+
+      for (let i = 0; i < 120; i++) {
+        const j = await (await fetch(`${BASE}/api/projects/${projectId}/jobs/${job.id}`)).json();
+        if (j.status === 'done') {
+          const files = (await fs.readdir(backupDir)).filter((f) => f.endsWith('.tar.gz'));
+          assert(files.length >= 1, '未生成备份文件');
+          // 校验是合法 gzip
+          const buf = await fs.readFile(path.join(backupDir, files[0]));
+          assert(buf[0] === 0x1f && buf[1] === 0x8b, '备份文件不是合法 gzip');
+          await fs.rm(backupDir, { recursive: true, force: true }).catch(() => {});
+          return `${files.length} 个备份，${(buf.length / 1024).toFixed(1)} KB，越界路径已拒绝`;
+        }
+        if (j.status === 'failed') throw new Error(`备份失败：${j.error}`);
+        await new Promise((r) => setTimeout(r, 150));
+      }
+      throw new Error('备份超时');
+    });
+
     await check('灵感箱', async () => {
       const res = await fetch(`${BASE}/api/projects/${projectId}/inbox`, {
         method: 'POST',

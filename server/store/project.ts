@@ -189,7 +189,22 @@ export class ProjectStore {
       auto_punct: false,
     };
     const raw = await readJsonSafe<Partial<ProjectMeta>>(this.paths.projectFile, {});
-    // 迁移只增不破坏：新字段补默认值
+
+    // 前向保护：作品由「更新版本」的工具写过时，旧版本绝不能继续打开并回写。
+    // 否则 schema_version 会被降级成当前版本号，未来字段被静默丢弃 —— 那是丢数据。
+    // 宁可拒绝打开并提示升级，也不能悄悄改坏。
+    const diskVersion = typeof raw.schema_version === 'number' ? raw.schema_version : SCHEMA_VERSION;
+    if (diskVersion > SCHEMA_VERSION) {
+      throw new Error(
+        `这个作品由更新版本的写作台创建（schema_version ${diskVersion}，` +
+          `当前版本只支持到 ${SCHEMA_VERSION}）。请升级写作台后再打开，` +
+          `以免旧版本改写文件导致内容丢失。`,
+      );
+    }
+
+    // 迁移只增不破坏：新字段补默认值。
+    // 目前只有 schema_version 1，没有历史版本需要迁移；
+    // 将来加版本时，在这里按 diskVersion 分支补齐字段即可。
     const meta: ProjectMeta = {
       ...fallback,
       ...raw,

@@ -63,6 +63,13 @@ export interface EditorHandle {
   isDirty(): boolean;
   /** 服务端确认落盘：更新「干净」基准 */
   markSaved(body?: string): void;
+  /**
+   * 用服务端返回的权威内容覆盖编辑器（如标点自动规整的结果）。
+   *
+   * 只在「作者没有继续输入」时调用，否则会吞掉正在敲的字。
+   * 会保留光标位置，避免跳到最后。
+   */
+  setValue(body: string): void;
   /** 立刻记住光标位置（切文档前调用，避免丢位置） */
   saveCaret(): void;
   setTypewriter(on: boolean): void;
@@ -1047,6 +1054,14 @@ export function createEditor(container: HTMLElement, handlers: EditorHandlers): 
     isDirty: () => serialize() !== savedBody,
     markSaved: (body?: string) => {
       savedBody = body ?? serialize();
+    },
+    setValue: (body: string) => {
+      // 保留光标：规整只改标点，字符数变化很小，用当前偏移近似即可。
+      // 直接 applyBody 会把光标丢到末尾，作者会以为跳行了。
+      const caret = getCaret();
+      applyBody(body, caret);
+      savedBody = body;
+      lastBody = body;
     },
     saveCaret: () => rememberCaret(),
     setTypewriter: (on: boolean) => {

@@ -25,6 +25,7 @@ import { DOC_STATUSES } from '../../shared/types.ts';
 import type { ProjectContext } from '../context.ts';
 import type { AppContextImpl } from '../app-context.ts';
 import { countWords } from '../util/words.ts';
+import { normalizePunctuationSafe } from '../util/punctuation.ts';
 import {
   badRequest,
   notFound,
@@ -238,8 +239,27 @@ export function registerDocRoutes(app: FastifyInstance, appCtx: AppContextImpl):
     const ctx = await projectOf(appCtx, pid);
     const body = (request.body ?? {}) as Record<string, unknown>;
 
-    const text = requireString(body.body, 'body', { allowEmpty: true, trim: false });
+    const rawText = requireString(body.body, 'body', { allowEmpty: true, trim: false });
     const baseRev = Math.max(0, Math.round(requireNumber(body.base_rev, 'base_rev', 0)));
+
+    // 标点规整（架构 3.1 P0）：只在项目开启时生效，且只在保存这一步做。
+    // 不做实时输入改写 —— 作者正在打字时改字会跳光标、吞输入。
+    // 幂等，所以重复保存不会持续变化；返回规整后的文本给前端同步。
+    let text = rawText;
+    let punctNormalized = false;
+    try {
+      const meta = await ctx.store.readMeta();
+      if (meta.auto_punct) {
+        const normalized = normalizePunctuationSafe(rawText);
+        if (normalized !== rawText) {
+          text = normalized;
+          punctNormalized = true;
+        }
+      }
+    } catch (err) {
+      // 规整失败不影响保存本身
+      console.error('[docs] 标点规整失败（继续保存原文）:', err);
+    }
 
     const found = await ctx.store.resolveDocFile(id);
     if (!found || !found.node || found.node.kind !== 'scene' || !found.abs) {
@@ -351,6 +371,8 @@ export function registerDocRoutes(app: FastifyInstance, appCtx: AppContextImpl):
       updated_at: result.updated_at,
       word_count: result.word_count,
     };
+    // 规整改动了标点时，把结果回传，前端据此同步编辑器
+    if (punctNormalized) response.body = text;
     if (conflictSnapshotId) {
       response.conflict = {
         snapshot_id: conflictSnapshotId,
