@@ -12,11 +12,17 @@ import type { DocNode } from '../../shared/types.ts';
 import type { ProjectContext } from '../context.ts';
 import type { JobContext } from '../util/job-queue.ts';
 import { ENTITY_DIRS } from '../store/project.ts';
+import { parseRelations, relationsOnly } from '../graph/relations-format.ts';
+import { resolveTypeKey, loadRelationTypes } from '../graph/types.ts';
+
+/** 索引结构与内容的版本。改动表结构或新增索引表时加一。 */
+export const INDEX_SCHEMA_VERSION = 2;
 
 export interface RebuildStats {
   docs: number;
   entities: number;
   words: number;
+  relations: number;
   took_ms: number;
 }
 
@@ -123,18 +129,82 @@ export class IndexerService {
     job?.progress(0.88, '扫描出场');
     await this.ctx.mentions.scanAll(job);
 
+    // 关系索引（全量）：从每个条目文件的 relations 块重建
+    job?.progress(0.94, '索引关系');
+    const relationStats = await this.rebuildRelations();
+
     this.ctx.index.setMeta('rebuilt_at', String(Date.now()));
-    this.ctx.index.setMeta('schema', '1');
+    // 版本号加一：旧项目首次打开会因版本不符而重建，从而补上 relation 表数据
+    this.ctx.index.setMeta('schema', String(INDEX_SCHEMA_VERSION));
     job?.progress(1, '索引重建完成');
 
-    return { docs: tree.nodes.length, entities: entities.length, words, took_ms: Date.now() - t0 };
+    return {
+      docs: tree.nodes.length,
+      entities: entities.length,
+      words,
+      relations: relationStats.indexed,
+      took_ms: Date.now() - t0,
+    };
+  }
+
+  /**
+   * 全量重建关系索引。
+   *
+   * 数据源是每个条目文件 frontmatter 里的 `relations: |` 块。
+   * 无法解析的行不进表（它们由 lint 从文件侧报告），但也不会被改写。
+   */
+  async rebuildRelations(): Promise<{ indexed: number; unparsable: number }> {
+    const entities = await this.ctx.store.listEntities();
+    const types = await loadRelationTypes(this.ctx.root);
+
+    // 先把所有条目的关系读出来（异步 IO 不能放在事务回调里），再一次性写库
+    const parsed: Array<{ entityId: string; rows: RelationIndexRow[] }> = [];
+    let unparsable = 0;
+
+    for (const entity of entities) {
+      const located = await this.ctx.store.entityRelationsRaw(entity.id);
+      if (!located || !located.block) continue;
+
+      const lines = parseRelations(located.block);
+      unparsable += lines.filter(
+        (l) => l.kind === 'raw' && l.text.trim() !== '' && !l.text.trim().startsWith('#'),
+      ).length;
+
+      parsed.push({ entityId: entity.id, rows: toIndexRows(relationsOnly(lines), types) });
+    }
+
+    let indexed = 0;
+    this.ctx.index.transaction(() => {
+      this.ctx.index.clearRelations();
+      for (const { entityId, rows } of parsed) {
+        this.ctx.index.replaceRelationsOf(entityId, rows);
+        indexed += rows.length;
+      }
+    });
+
+    return { indexed, unparsable };
+  }
+
+  /** 单个条目的关系变更后增量更新（保存条目、增删改关系时调用） */
+  async indexRelationsOf(entityId: string): Promise<void> {
+    const located = await this.ctx.store.entityRelationsRaw(entityId);
+    if (!located) {
+      this.ctx.index.clearRelationsOf(entityId);
+      return;
+    }
+    const types = await loadRelationTypes(this.ctx.root);
+    const lines = parseRelations(located.block);
+    const rows = toIndexRows(relationsOnly(lines), types);
+    this.ctx.index.transaction(() => this.ctx.index.replaceRelationsOf(entityId, rows));
   }
 
   /** 启动时确保索引可用 */
   async ensureFresh(): Promise<void> {
     const hasSchema = this.ctx.index.getMeta('schema');
     const docCount = this.ctx.index.countDocs();
-    if (!hasSchema || docCount === 0) {
+    // 版本不符就重建：新增表（如 relation）时旧索引缺数据，
+    // 靠版本号让旧项目在打开时自动补齐。
+    if (!hasSchema || hasSchema !== String(INDEX_SCHEMA_VERSION) || docCount === 0) {
       // 首次打开或索引丢失：静默重建（这是"索引可重建"的兜底路径）
       await this.rebuildAll();
     }
@@ -154,4 +224,41 @@ export class IndexerService {
 /** 从作品根目录推导作品 id（用目录名，人可读） */
 export function projectIdFromRoot(root: string): string {
   return path.basename(root);
+}
+
+// ─────────────────────── 关系索引写入工具 ───────────────────────
+
+interface RelationIndexRow {
+  id: string;
+  to_id: string;
+  type: string;
+  since: string | null;
+  until: string | null;
+  reveal: string | null;
+  weight: number | null;
+  note: string;
+  extra: Record<string, string> | null;
+  line_no: number | null;
+}
+
+/**
+ * 把解析出的关系行转成索引行。
+ * 类型统一成注册表 key（文件里写「师徒」也能正确落库成 mentor）。
+ */
+function toIndexRows(
+  rels: Array<Omit<import('../../shared/types.ts').Relation, 'from'>>,
+  types: Awaited<ReturnType<typeof loadRelationTypes>>,
+): RelationIndexRow[] {
+  return rels.map((rel) => ({
+    id: rel.id,
+    to_id: rel.to,
+    type: resolveTypeKey(types, rel.type) ?? rel.type,
+    since: rel.since ?? null,
+    until: rel.until ?? null,
+    reveal: rel.reveal ?? null,
+    weight: rel.weight ?? null,
+    note: rel.note ?? '',
+    extra: rel.extra_props ?? null,
+    line_no: null,
+  }));
 }

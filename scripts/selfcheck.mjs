@@ -604,6 +604,105 @@ async function main() {
       return '打码正确，回传不覆盖';
     });
 
+    await check('关系：新增 → 读回 → 修改 → 删除', async () => {
+      // 建两个角色
+      const mk = async (name) => {
+        const r = await fetch(`${BASE}/api/projects/${projectId}/entities`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ type: 'character', name }),
+        });
+        assert(r.status === 200, `建条目失败 ${name}: HTTP ${r.status}`);
+        return r.json();
+      };
+      const e1 = await mk('自检角色甲');
+      const e2 = await mk('自检角色乙');
+
+      // 新增师徒关系
+      const create = await fetch(`${BASE}/api/projects/${projectId}/entities/${e1.id}/relations`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ type: 'mentor', to: e2.id, note: '自检备注' }),
+      });
+      assert(create.status === 200, `新增关系失败 HTTP ${create.status}`);
+      const rel = await create.json();
+      assert(rel.id, '未返回关系 id');
+
+      // 读回
+      const view = await (await fetch(`${BASE}/api/projects/${projectId}/entities/${e1.id}/relations`)).json();
+      assert(view.out.length === 1, `出向关系应为 1 条，实际 ${view.out.length}`);
+      assert(view.out[0].to_name === '自检角色乙', '目标显示名不对');
+
+      // 入向（反向视角）
+      const back = await (await fetch(`${BASE}/api/projects/${projectId}/entities/${e2.id}/relations`)).json();
+      assert(back.in.length === 1, '入向关系应为 1 条');
+
+      // 修改
+      const patch = await fetch(`${BASE}/api/projects/${projectId}/relations/${rel.id}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ note: '改过的备注' }),
+      });
+      assert(patch.status === 200, `修改失败 HTTP ${patch.status}`);
+      assert((await patch.json()).note === '改过的备注', '备注未更新');
+
+      // 删除
+      const del = await fetch(`${BASE}/api/projects/${projectId}/relations/${rel.id}`, { method: 'DELETE' });
+      assert(del.status === 200, `删除失败 HTTP ${del.status}`);
+      const after = await (await fetch(`${BASE}/api/projects/${projectId}/entities/${e1.id}/relations`)).json();
+      assert(after.out.length === 0, '删除后关系仍在');
+
+      return '增删改查全通';
+    });
+
+    await check('关系：非法端点被拒绝', async () => {
+      const list = await (await fetch(`${BASE}/api/projects/${projectId}/entities`)).json();
+      const e1 = list.find((e) => e.name === '自检角色甲');
+      const e2 = list.find((e) => e.name === '自检角色乙');
+      assert(e1 && e2, '缺少上一步创建的角色');
+
+      // 师徒只能角色→角色，这里用「导致」（只能事件→事件）应当被拒
+      const res = await fetch(`${BASE}/api/projects/${projectId}/entities/${e1.id}/relations`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ type: 'causes', to: e2.id }),
+      });
+      assert(res.status === 400, `应返回 400，实际 ${res.status}`);
+      const err = await res.json();
+      assert(err.code === 'rel_endpoint_invalid', `错误码应为 rel_endpoint_invalid，实际 ${err.code}`);
+      const detail = err.message || err.error;
+      assert(detail.includes('不支持'), `错误信息应说明原因，实际：${detail}`);
+      return `${err.code}`;
+    });
+
+    await check('关系：目标删除后标记悬空并被 lint 报告', async () => {
+      const list = await (await fetch(`${BASE}/api/projects/${projectId}/entities`)).json();
+      const e1 = list.find((e) => e.name === '自检角色甲');
+      const e2 = list.find((e) => e.name === '自检角色乙');
+      assert(e1 && e2);
+
+      // 建关系后删除目标
+      const create = await fetch(`${BASE}/api/projects/${projectId}/entities/${e1.id}/relations`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ type: 'kin', to: e2.id }),
+      });
+      assert(create.status === 200, `建关系失败 HTTP ${create.status}`);
+
+      await fetch(`${BASE}/api/projects/${projectId}/entities/${e2.id}`, { method: 'DELETE' });
+
+      const view = await (await fetch(`${BASE}/api/projects/${projectId}/entities/${e1.id}/relations`)).json();
+      assert(view.out.length === 1, '关系应还在（悬空状态）');
+      assert(view.out[0].dangling === true, '应标记 dangling');
+
+      const lint = await (await fetch(`${BASE}/api/projects/${projectId}/relations/lint`)).json();
+      assert(
+        lint.some((i) => i.code === 'relation_dangling_target'),
+        'lint 应报告悬空关系',
+      );
+      return `悬空 ${lint.filter((i) => i.code === 'relation_dangling_target').length} 条`;
+    });
+
     await check('灵感箱', async () => {
       const res = await fetch(`${BASE}/api/projects/${projectId}/inbox`, {
         method: 'POST',

@@ -1869,3 +1869,173 @@
   line-height: 1.6;
   color: var(--ink-4);
 }
+
+/* ══════════════════════════════════════════════════════════════════
+   关系分组（设定库详情）
+   300px 窄栏：纵向排列，不做左右分栏；表单内联展开不弹窗。
+   ══════════════════════════════════════════════════════════════════ */
+
+.p-rel-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.p-rel-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.p-rel-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: var(--fs-xs);
+  color: var(--ink-4);
+  letter-spacing: 0.3px;
+  padding-bottom: 2px;
+  border-bottom: 1px solid var(--paper-3);
+}
+
+.p-rel-add {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--r-sm);
+  color: var(--ink-3);
+  font-size: 15px;
+  line-height: 1;
+  transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+}
+.p-rel-add:hover {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+
+.p-rel-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--sp-2) var(--sp-1);
+  border-radius: var(--r-sm);
+  transition: background var(--dur-1) var(--ease);
+}
+.p-rel-row:hover {
+  background: var(--paper-2);
+}
+.p-rel-row.dangling {
+  background: var(--warn-soft);
+}
+
+.p-rel-main {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  font-size: var(--fs-md);
+}
+
+.p-rel-type {
+  flex: none;
+  color: var(--ink-3);
+  font-size: var(--fs-xs);
+  padding: 1px 5px;
+  border-radius: 99px;
+  background: var(--paper-3);
+}
+
+.p-rel-arrow {
+  flex: none;
+  color: var(--ink-4);
+  font-size: var(--fs-sm);
+}
+
+.p-rel-name {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  color: var(--ink-1);
+  font-size: var(--fs-md);
+  padding: 0;
+  border-radius: var(--r-sm);
+}
+.p-rel-name:hover {
+  color: var(--accent-ink);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.p-rel-row.dangling .p-rel-name {
+  color: var(--warn);
+}
+
+.p-rel-meta {
+  font-size: var(--fs-xs);
+  color: var(--ink-4);
+  line-height: 1.5;
+}
+
+.p-rel-ops {
+  display: flex;
+  gap: var(--sp-2);
+  margin-top: 1px;
+}
+
+.p-rel-op {
+  font-size: var(--fs-xs);
+  color: var(--ink-3);
+  padding: 1px 0;
+  transition: color var(--dur-1) var(--ease);
+}
+.p-rel-op:hover {
+  color: var(--accent-ink);
+}
+.p-rel-op.danger:hover {
+  color: var(--danger);
+}
+
+/* ── 内联表单 ── */
+
+.p-rel-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
+  padding: var(--sp-2);
+  border-radius: var(--r-md);
+  background: var(--paper-2);
+  border: 1px solid var(--paper-4);
+}
+
+.p-rel-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: var(--fs-xs);
+  color: var(--ink-3);
+}
+.p-rel-field .select,
+.p-rel-field .input {
+  font-size: var(--fs-md);
+  padding: 5px 8px;
+}
+
+.p-rel-error {
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+  color: var(--danger);
+  padding: var(--sp-2);
+  border-radius: var(--r-sm);
+  background: var(--danger-soft);
+}
+.p-rel-error.hidden {
+  display: none;
+}
+
+.p-rel-form-ops {
+  display: flex;
+  gap: var(--sp-2);
+  justify-content: flex-end;
+}

@@ -122,6 +122,28 @@ CREATE TABLE IF NOT EXISTS meta (
   value TEXT NOT NULL
 );
 
+-- 关系索引。与其他索引表一样：**可丢弃重建**，真相在条目文件的 relations 块里。
+-- 起点 id 是关系所属的条目（关系存在起点的文件里），终点 id 是被指向的条目。
+-- 这张表只存结构化的字段；无法解析的行不进表，由 lint 从文件里报告。
+CREATE TABLE IF NOT EXISTS relation (
+  id        TEXT PRIMARY KEY,
+  from_id   TEXT NOT NULL,
+  to_id     TEXT NOT NULL,
+  type      TEXT NOT NULL,
+  since     TEXT,
+  until     TEXT,
+  reveal    TEXT,
+  weight    INTEGER,
+  note      TEXT NOT NULL DEFAULT '',
+  -- 未知属性以 JSON 保存，保证往返不丢（红线 R5：绝不静默丢弃）
+  extra     TEXT NOT NULL DEFAULT '',
+  -- 在 relations 块里的行号（从 1 开始），用于 lint 定位
+  line_no   INTEGER
+);
+CREATE INDEX IF NOT EXISTS relation_from ON relation(from_id);
+CREATE INDEX IF NOT EXISTS relation_to   ON relation(to_id);
+CREATE INDEX IF NOT EXISTS relation_type ON relation(type);
+
 CREATE TABLE IF NOT EXISTS goal_log (
   date    TEXT PRIMARY KEY,
   words   INTEGER NOT NULL DEFAULT 0,
@@ -176,6 +198,7 @@ export class IndexDb {
         DELETE FROM mention;
         DELETE FROM char_index;
         DELETE FROM lint_result;
+        DELETE FROM relation;
       `);
     });
   }
@@ -258,6 +281,104 @@ export class IndexDb {
     for (const r of results) {
       insert.run(r.rule_id, docId, r.from_pos, r.to_pos, r.text, r.message, r.severity);
     }
+  }
+
+  // ─────────────────────── 关系索引 ───────────────────────
+  //
+  // 这张表与其他索引表同性质：**可从文件完整重建**。
+  // 真相是条目文件的 `relations: |` 块，表只用于快速反查（某人被谁指向）。
+
+  /** 整体替换某个起点的全部关系（先删后插，调用方保证在事务内） */
+  replaceRelationsOf(fromId: string, rels: RelationRow[]): void {
+    this.db.prepare('DELETE FROM relation WHERE from_id = ?').run(fromId);
+    const insert = this.db.prepare(
+      `INSERT OR REPLACE INTO relation
+        (id, from_id, to_id, type, since, until, reveal, weight, note, extra, line_no)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    for (const r of rels) {
+      insert.run(
+        r.id,
+        fromId,
+        r.to_id,
+        r.type,
+        r.since ?? null,
+        r.until ?? null,
+        r.reveal ?? null,
+        r.weight ?? null,
+        r.note ?? '',
+        r.extra ? JSON.stringify(r.extra) : '',
+        r.line_no ?? null,
+      );
+    }
+  }
+
+  /** 删除某个起点的全部关系（条目被删除/移入回收站时调用） */
+  clearRelationsOf(fromId: string): void {
+    this.db.prepare('DELETE FROM relation WHERE from_id = ?').run(fromId);
+  }
+
+  /** 删除单条关系 */
+  deleteRelation(id: string): void {
+    this.db.prepare('DELETE FROM relation WHERE id = ?').run(id);
+  }
+
+  /** 该条目指向别人的关系 */
+  relationsFrom(id: string): StoredRelationRow[] {
+    const rows = this.db
+      .prepare('SELECT * FROM relation WHERE from_id = ? ORDER BY line_no, id')
+      .all(id) as Array<Record<string, unknown>>;
+    return rows.map(toRelationRow);
+  }
+
+  /**
+   * 指向该条目的关系。
+   *
+   * 无向关系（亲属、盟友）在文件里只存一份（约定存 id 较小的一方），
+   * 所以「反向视角」在查询时由调用方按类型定义补充，这里只按 to_id 精确匹配。
+   */
+  relationsTo(id: string): StoredRelationRow[] {
+    const rows = this.db
+      .prepare('SELECT * FROM relation WHERE to_id = ? ORDER BY from_id, line_no')
+      .all(id) as Array<Record<string, unknown>>;
+    return rows.map(toRelationRow);
+  }
+
+  getRelation(id: string): StoredRelationRow | null {
+    const row = this.db.prepare('SELECT * FROM relation WHERE id = ?').get(id) as
+      | Record<string, unknown>
+      | undefined;
+    return row ? toRelationRow(row) : null;
+  }
+
+  allRelations(): StoredRelationRow[] {
+    const rows = this.db.prepare('SELECT * FROM relation ORDER BY from_id, line_no').all() as Array<
+      Record<string, unknown>
+    >;
+    return rows.map(toRelationRow);
+  }
+
+  clearRelations(): void {
+    this.db.prepare('DELETE FROM relation').run();
+  }
+
+  countRelations(): number {
+    const row = this.db.prepare('SELECT COUNT(*) AS c FROM relation').get() as { c: number };
+    return Number(row.c);
+  }
+
+  /**
+   * 找出所有关系 id 重复的行（同一 id 出现在多个文件里）。
+   * 用于 lint —— 这通常意味着复制粘贴条目文件后忘了改 id。
+   */
+  duplicateRelationIds(): Array<{ id: string; from_ids: string[] }> {
+    const rows = this.db
+      .prepare(
+        `SELECT id, GROUP_CONCAT(from_id) AS froms, COUNT(*) AS n
+           FROM relation GROUP BY id HAVING n > 1`,
+      )
+      .all() as Array<{ id: string; froms: string; n: number }>;
+    return rows.map((r) => ({ id: r.id, from_ids: String(r.froms).split(',') }));
   }
 
   setMeta(key: string, value: string): void {
@@ -421,6 +542,58 @@ export class IndexDb {
     }
     return out.sort((a, b) => b.count - a.count).slice(0, limit);
   }
+}
+
+/** 关系索引行的形状（与 shared/types.ts 的 Relation 对齐，另带行号） */
+/** 从表里读出来的关系行（from_id 必有） */
+export type StoredRelationRow = RelationRow & { from_id: string };
+
+export interface RelationRow {
+  id: string;
+  /**
+   * 关系所属的起点条目。
+   *
+   * 写入时可以不传 —— replaceRelationsOf(fromId, rows) 会统一填上；
+   * 读取时总是有值（来自表的 from_id 列）。
+   */
+  from_id?: string;
+  to_id: string;
+  type: string;
+  since: string | null;
+  until: string | null;
+  reveal: string | null;
+  weight: number | null;
+  note: string;
+  extra: Record<string, string> | null;
+  line_no: number | null;
+}
+
+function toRelationRow(raw: Record<string, unknown>): StoredRelationRow {
+  let extra: Record<string, string> | null = null;
+  if (typeof raw.extra === 'string' && raw.extra) {
+    try {
+      const parsed = JSON.parse(raw.extra) as unknown;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        extra = parsed as Record<string, string>;
+      }
+    } catch {
+      // 坏数据不阻塞查询：当作没有额外属性，lint 会从文件侧报告
+      extra = null;
+    }
+  }
+  return {
+    id: String(raw.id),
+    from_id: String(raw.from_id),
+    to_id: String(raw.to_id),
+    type: String(raw.type),
+    since: raw.since === null || raw.since === undefined ? null : String(raw.since),
+    until: raw.until === null || raw.until === undefined ? null : String(raw.until),
+    reveal: raw.reveal === null || raw.reveal === undefined ? null : String(raw.reveal),
+    weight: typeof raw.weight === 'number' ? raw.weight : null,
+    note: typeof raw.note === 'string' ? raw.note : '',
+    extra,
+    line_no: typeof raw.line_no === 'number' ? raw.line_no : null,
+  };
 }
 
 function safeJsonArray(raw: string): string[] {

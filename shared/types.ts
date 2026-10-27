@@ -638,6 +638,114 @@ export interface TimelineEvent {
   description: string;
 }
 
+// ─────────────────────────── 关系图谱 ───────────────────────────
+
+/**
+ * 一条关系。
+ *
+ * 存储位置：起点条目的 frontmatter `relations: |` 多行块里，每行一条。
+ * `from` 由所在文件决定，不写在行里 —— 这样改文件名不会让关系失效。
+ *
+ * since / until / reveal 存的是**文档 id**（章或场景），显示时才换算成「第 N 章」。
+ * 存序号会在作者调整章节顺序后全部指错。
+ */
+export interface Relation {
+  /** 关系 id，形如 r_01J... */
+  id: string;
+  /** 类型键（注册表里的 key） */
+  type: string;
+  /** 起点条目 id */
+  from: string;
+  /** 终点条目 id */
+  to: string;
+  /** 终点显示名，仅用于人眼阅读；以 id 为准，保存时自动刷新 */
+  to_name?: string;
+  /** 成立锚点（文档 id） */
+  since?: string;
+  /** 结束锚点（文档 id） */
+  until?: string;
+  /** 读者得知锚点（文档 id） */
+  reveal?: string;
+  /** 权重，用于图布局 */
+  weight?: number;
+  /** 备注，可含任意字符（包括 | 和 ->） */
+  note: string;
+  /** 无法识别的属性键原样保留 */
+  extra_props?: Record<string, string>;
+}
+
+/** 关系类型定义 */
+export interface RelationTypeDef {
+  key: string;
+  /** 显示名，如「师徒」 */
+  label: string;
+  /** 反向显示名，如「徒弟」 */
+  inverse_label: string;
+  /** 是否有方向。无向关系（朋友、亲属）在两个方向上语义相同 */
+  directed: boolean;
+  /** 允许的端点类型组合；null 表示不限 */
+  allowed: Array<[EntityType, EntityType]> | null;
+  /** 是否禁止成环（如「导致」） */
+  acyclic: boolean;
+  /** 与之语义冲突的类型（如 ally 与 enemy），仅用于提示，不拒绝 */
+  exclusive_with: string[];
+}
+
+/** 新增关系的入参 */
+export interface RelationInput {
+  /** 类型键或中文显示名 */
+  type: string;
+  /** 目标条目 id */
+  to: string;
+  since?: string;
+  until?: string;
+  reveal?: string;
+  weight?: number;
+  note?: string;
+}
+
+/**
+ * 修改关系的入参。
+ *
+ * 注意：**不含 `to` 与方向** —— 重连端点、反转方向都要改两个条目文件
+ * （起点的行 + 终点的反向视角），属于跨多文件操作，等有了多文件事务日志再做。
+ */
+export interface RelationPatch {
+  type?: string;
+  since?: string | null;
+  until?: string | null;
+  reveal?: string | null;
+  weight?: number | null;
+  note?: string;
+}
+
+/** 条目详情里的关系视图 */
+export interface RelationView {
+  /** 该条目指向别人（存在自己的文件里） */
+  out: Array<Relation & { dangling?: boolean }>;
+  /** 别人指向该条目（从索引里反查） */
+  in: Array<Relation & { dangling?: boolean }>;
+}
+
+/** 图谱一致性检查问题 */
+export interface GraphLintIssue {
+  code:
+    | 'relation_dangling_target'
+    | 'relation_anchor_missing'
+    | 'relation_duplicate'
+    | 'relation_unparsable_line'
+    | 'relation_unknown_type';
+  severity: 'warn' | 'error';
+  /** 出问题的条目 id */
+  entity_id: string;
+  entity_name?: string;
+  relation_id?: string;
+  /** 相关行文本或说明 */
+  detail: string;
+  /** 在 relations 块里的行号（从 1 开始），仅有行级问题时提供 */
+  line_no?: number;
+}
+
 // ─────────────────────────── WebSocket 事件 ───────────────────────────
 
 export type WsEvent =

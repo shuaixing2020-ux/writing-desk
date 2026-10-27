@@ -11,6 +11,7 @@ import type { AppState } from '../../lib/store.ts';
 import type { Entity, EntityDetail, EntityType } from '../../../../shared/types.ts';
 import { ENTITY_TYPE_LABELS } from '../../../../shared/types.ts';
 import { h, fmtNum, relativeTime } from '../../lib/dom.ts';
+import { renderRelationSection } from './relations-block.ts';
 import {
   ICONS,
   bigIcon,
@@ -352,6 +353,59 @@ export const panel: PanelDef = {
       });
       descBox.appendChild(desc);
       contentHost.appendChild(descBox);
+
+      // 关系（指向与被指向）
+      try {
+        contentHost.appendChild(
+          renderRelationSection({
+            ctx,
+            entity: {
+              id: ent.id,
+              type: ent.type,
+              name: ent.name,
+              aliases: ent.aliases,
+              fields: ent.fields,
+              description: ent.description,
+              created_at: ent.created_at,
+              updated_at: ent.updated_at,
+            },
+            entities: ctx.store.state.entities,
+            docs: ctx.store.state.nodes.map((n) => ({
+              id: n.id,
+              title: n.title,
+              kind: n.kind,
+              order: n.order,
+              parent_id: n.parent_id,
+            })),
+            ordinalOf: (docId) => {
+              // 场景归它所在的章；章取自身
+              const nodes = ctx.store.state.nodes;
+              const byId = new Map(nodes.map((n) => [n.id, n]));
+              const chapters = nodes
+                .filter((n) => n.kind === 'chapter')
+                .sort((a, b) => a.order - b.order);
+              let cur = byId.get(docId);
+              let guard = 0;
+              while (cur && guard++ < 50) {
+                if (cur.kind === 'chapter') {
+                  const idx = chapters.findIndex((c) => c.id === cur!.id);
+                  return idx === -1 ? null : idx + 1;
+                }
+                cur = cur.parent_id ? byId.get(cur.parent_id) : undefined;
+              }
+              return null;
+            },
+            onChanged: () => {
+              // 关系变化后重载详情（悬空状态需要重新计算）
+              void openDetail(ent.id);
+            },
+          }),
+        );
+      } catch (err) {
+        contentHost.appendChild(
+          h('div', { class: 'p-field-empty' }, `关系加载失败：${errText(err)}`),
+        );
+      }
 
       // 反向引用
       const mentionBox = h('div', { class: 'p-field' });

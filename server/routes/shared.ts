@@ -38,6 +38,11 @@ export function notFound(message: string, code = 'not_found'): HttpError {
   return new HttpError(404, message, code);
 }
 
+/** 409：请求本身合法，但与当前状态冲突（如条目重名） */
+export function conflict(message: string, code = 'conflict'): HttpError {
+  return new HttpError(409, message, code);
+}
+
 // ─────────────────────── 参数校验 ───────────────────────
 
 export function requireString(

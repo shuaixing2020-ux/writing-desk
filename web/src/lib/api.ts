@@ -7,6 +7,12 @@
 
 import type {
   AiConfig,
+  GraphLintIssue,
+  Relation,
+  RelationInput,
+  RelationPatch,
+  RelationTypeDef,
+  RelationView,
   AiResponse,
   AiStatus,
   BackupTarget,
@@ -94,13 +100,17 @@ async function request<T>(method: string, url: string, body?: unknown): Promise<
   }
 
   if (!res.ok) {
-    const errObj = payload as { error?: string; code?: string } | null;
-    throw new ApiClientError(
-      errObj?.error || `请求失败（HTTP ${res.status}）`,
-      res.status,
-      errObj?.code ?? 'error',
-      payload,
-    );
+    // 错误体有两种形态：
+    //   1. 服务端自定形态 { error, code }
+    //   2. Fastify 包装过的 Error 序列化 { statusCode, error, message, code }
+    // 包装形态里 error 被换成英文（"Bad Request"），真正的中文原因在 message。
+    // 所以优先读 message，再退回 error，最后才是通用文案。
+    const errObj = payload as { error?: string; message?: string; code?: string } | null;
+    const detail =
+      (typeof errObj?.message === 'string' && errObj.message) ||
+      (typeof errObj?.error === 'string' && errObj.error) ||
+      `请求失败（HTTP ${res.status}）`;
+    throw new ApiClientError(detail, res.status, errObj?.code ?? 'error', payload);
   }
   return payload as T;
 }
@@ -249,6 +259,24 @@ export const api = {
   // ─────────── 导出设置 ───────────
   saveTypeset: (typeset: TypesetPreset) =>
     patch<ProjectMeta>(`${projectPrefix()}/meta`, { typeset }),
+
+  // ─────────── 关系图谱 ───────────
+  listRelations: (entityId: string) =>
+    get<RelationView>(`${projectPrefix()}/entities/${encodeURIComponent(entityId)}/relations`),
+
+  createRelation: (entityId: string, input: RelationInput) =>
+    post<Relation>(`${projectPrefix()}/entities/${encodeURIComponent(entityId)}/relations`, input),
+
+  updateRelation: (relationId: string, patchBody: RelationPatch) =>
+    patch<Relation>(`${projectPrefix()}/relations/${encodeURIComponent(relationId)}`, patchBody),
+
+  deleteRelation: (relationId: string) =>
+    del<{ ok: true }>(`${projectPrefix()}/relations/${encodeURIComponent(relationId)}`),
+
+  listRelationTypes: () =>
+    get<{ types: RelationTypeDef[]; warnings: string[] }>(`${projectPrefix()}/relation-types`),
+
+  lintRelations: () => get<GraphLintIssue[]>(`${projectPrefix()}/relations/lint`),
 
   // ─────────── AI 接入（预留，默认关闭） ───────────
   getAi: () => get<{ config: AiConfig; status: AiStatus }>(`${projectPrefix()}/ai`),
