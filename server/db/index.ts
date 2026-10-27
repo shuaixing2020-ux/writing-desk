@@ -324,7 +324,7 @@ export class IndexDb {
   }
 
   /** 该条目指向别人的关系 */
-  relationsFrom(id: string): RelationRow[] {
+  relationsFrom(id: string): StoredRelationRow[] {
     const rows = this.db
       .prepare('SELECT * FROM relation WHERE from_id = ? ORDER BY line_no, id')
       .all(id) as Array<Record<string, unknown>>;
@@ -337,21 +337,21 @@ export class IndexDb {
    * 无向关系（亲属、盟友）在文件里只存一份（约定存 id 较小的一方），
    * 所以「反向视角」在查询时由调用方按类型定义补充，这里只按 to_id 精确匹配。
    */
-  relationsTo(id: string): RelationRow[] {
+  relationsTo(id: string): StoredRelationRow[] {
     const rows = this.db
       .prepare('SELECT * FROM relation WHERE to_id = ? ORDER BY from_id, line_no')
       .all(id) as Array<Record<string, unknown>>;
     return rows.map(toRelationRow);
   }
 
-  getRelation(id: string): RelationRow | null {
+  getRelation(id: string): StoredRelationRow | null {
     const row = this.db.prepare('SELECT * FROM relation WHERE id = ?').get(id) as
       | Record<string, unknown>
       | undefined;
     return row ? toRelationRow(row) : null;
   }
 
-  allRelations(): RelationRow[] {
+  allRelations(): StoredRelationRow[] {
     const rows = this.db.prepare('SELECT * FROM relation ORDER BY from_id, line_no').all() as Array<
       Record<string, unknown>
     >;
@@ -545,8 +545,18 @@ export class IndexDb {
 }
 
 /** 关系索引行的形状（与 shared/types.ts 的 Relation 对齐，另带行号） */
+/** 从表里读出来的关系行（from_id 必有） */
+export type StoredRelationRow = RelationRow & { from_id: string };
+
 export interface RelationRow {
   id: string;
+  /**
+   * 关系所属的起点条目。
+   *
+   * 写入时可以不传 —— replaceRelationsOf(fromId, rows) 会统一填上；
+   * 读取时总是有值（来自表的 from_id 列）。
+   */
+  from_id?: string;
   to_id: string;
   type: string;
   since: string | null;
@@ -558,7 +568,7 @@ export interface RelationRow {
   line_no: number | null;
 }
 
-function toRelationRow(raw: Record<string, unknown>): RelationRow {
+function toRelationRow(raw: Record<string, unknown>): StoredRelationRow {
   let extra: Record<string, string> | null = null;
   if (typeof raw.extra === 'string' && raw.extra) {
     try {
@@ -573,6 +583,7 @@ function toRelationRow(raw: Record<string, unknown>): RelationRow {
   }
   return {
     id: String(raw.id),
+    from_id: String(raw.from_id),
     to_id: String(raw.to_id),
     type: String(raw.type),
     since: raw.since === null || raw.since === undefined ? null : String(raw.since),

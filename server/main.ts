@@ -34,6 +34,7 @@ import { registerIoRoutes } from './routes/io.ts';
 import { registerBackupRoutes } from './routes/backup.ts';
 import { registerJobRoutes } from './routes/jobs.ts';
 import { registerAiRoutes } from './routes/ai.ts';
+import { registerGraphRoutes } from './routes/graph.ts';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const WEB_DIST = path.join(REPO_ROOT, 'web', 'dist');
@@ -152,6 +153,7 @@ export async function buildServer(dataDir: string): Promise<{
   registerBackupRoutes(app, appCtx);
   registerJobRoutes(app, appCtx);
   registerAiRoutes(app, appCtx);
+  registerGraphRoutes(app, appCtx);
 
   app.get('/api/health', async () => ({
     ok: true,
@@ -255,7 +257,13 @@ export async function buildServer(dataDir: string): Promise<{
         ? `服务内部错误：${error.message || '未知错误'}`
         : error.message || '请求失败';
 
-    return reply.code(status).send({ error: message, code });
+    // 用 .type().send() 并显式序列化：reply.send(对象) 会经过 Fastify 的
+    // 默认序列化器，它会给响应加上 statusCode/error 字段。我们自己已经把
+    // 错误信息整理好了，不需要它再包一层 —— 前端只读 error 与 code。
+    return reply
+      .code(status)
+      .type('application/json; charset=utf-8')
+      .send(JSON.stringify({ error: message, code }));
   });
 
   // 关闭钩子：先断开 WebSocket，再关作品索引，最后让 Fastify 收尾

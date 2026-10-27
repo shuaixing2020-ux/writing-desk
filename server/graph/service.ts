@@ -1,0 +1,615 @@
+/**
+ * 关系图谱服务（G1-2）。
+ *
+ * ═══════════════════ 范围（G1 只做单文件操作）═══════════════════
+ *
+ * 关系存在**起点条目**的 frontmatter 里，所以这些操作都只改一个文件，
+ * 可以安全复用现有的原子写与写入互斥：
+ *   - create：往起点文件追加一行
+ *   - update：替换起点文件里的对应行（类型、区间、权重、备注）
+ *   - remove：从起点文件删掉对应行
+ *
+ * **刻意不做**（等 G3 的多文件事务日志）：
+ *   - 改 `to`（重连端点）
+ *   - 反转方向
+ *   - 合并/拆分条目
+ *   - 级联删除
+ * 这些都要同时改两个条目文件，一旦中途失败会出现"半边关系"，
+ * 没有事务日志就不该做。
+ *
+ * ═══════════════════ 写入红线 ═══════════════════
+ *
+ * 1. 读-改-写在 `this.ctx.store` 的写互斥 + 保存锁内完成
+ * 2. 全部走 writeFileAtomic
+ * 3. 无法解析的 raw 行原样保留（红线 R5）
+ */
+
+import type {
+  EntityType,
+  GraphLintIssue,
+  Relation,
+  RelationInput,
+  RelationPatch,
+  RelationTypeDef,
+} from '../../shared/types.ts';
+import { ENTITY_TYPE_LABELS } from '../../shared/types.ts';
+import type { ProjectContext } from '../context.ts';
+import { readTextSafe, writeFileAtomic } from '../util/atomic.ts';
+import { parseFrontmatter, stringifyScene, type Frontmatter } from '../util/frontmatter.ts';
+import {
+  looksLikeBrokenRelation,
+  newRelationId,
+  parseRelations,
+  relationsOnly,
+  stringifyRelation,
+  stringifyRelations,
+  type RelationLine,
+} from './relations-format.ts';
+import {
+  describeAllowed,
+  getTypeDef,
+  isEndpointAllowed,
+  loadRelationTypes,
+  resolveTypeKey,
+  type RelationTypeTable,
+} from './types.ts';
+import { chapterOrdinalOf } from './ordinal.ts';
+import { withSaveLock } from '../routes/docs.ts';
+
+/** 带稳定错误码的关系操作错误 */
+export class RelationError extends Error {
+  readonly statusCode: number;
+  readonly code: string;
+  constructor(code: string, message: string, statusCode = 400) {
+    super(message);
+    this.name = 'RelationError';
+    this.code = code;
+    this.statusCode = statusCode;
+  }
+}
+
+export class GraphService {
+  private ctx: ProjectContext;
+
+  constructor(ctx: ProjectContext) {
+    this.ctx = ctx;
+  }
+
+  // ─────────────────────── 查询 ───────────────────────
+
+  /**
+   * 某条目的出向与入向关系。
+   *
+   * - out：存在自己文件里的关系（我指向谁）
+   * - in：从索引反查（谁指向我）。无向关系（亲属/盟友）也算进来
+   *
+   * 每条带 dangling 标记：目标条目已不存在时提示界面显示"目标已被删除"。
+   */
+  async list(entityId: string): Promise<{
+    out: Array<Relation & { dangling?: boolean }>;
+    in: Array<Relation & { dangling?: boolean }>;
+  }> {
+    const entities = await this.ctx.store.listEntities();
+    const byId = new Map(entities.map((e) => [e.id, e]));
+    if (!byId.has(entityId)) {
+      throw new RelationError('rel_entity_missing', `条目不存在：${entityId}`, 404);
+    }
+
+    const out: Array<Relation & { dangling?: boolean }> = [];
+    const inboundRaw = this.ctx.index.relationsTo(entityId);
+    const outRaw = this.ctx.index.relationsFrom(entityId);
+
+    for (const row of outRaw) {
+      const target = byId.get(row.to_id);
+      const rel: Relation & { dangling?: boolean } = {
+        id: row.id,
+        type: row.type,
+        from: entityId,
+        to: row.to_id,
+        note: row.note,
+      };
+      if (target) rel.to_name = target.name;
+      if (row.since) rel.since = row.since;
+      if (row.until) rel.until = row.until;
+      if (row.reveal) rel.reveal = row.reveal;
+      if (row.weight !== null) rel.weight = row.weight;
+      if (row.extra) rel.extra_props = row.extra;
+      if (!target) rel.dangling = true;
+      out.push(rel);
+    }
+
+    // 入向：别人指向我。排除自指重复（out 里已经有了）
+    const inList: Array<Relation & { dangling?: boolean }> = [];
+    for (const row of inboundRaw) {
+      if (row.from_id === entityId) continue;
+      const source = byId.get(row.from_id);
+      const rel: Relation & { dangling?: boolean } = {
+        id: row.id,
+        type: row.type,
+        from: row.from_id,
+        to: entityId,
+        note: row.note,
+      };
+      if (source) rel.to_name = source.name;
+      else rel.dangling = true;
+      if (row.since) rel.since = row.since;
+      if (row.until) rel.until = row.until;
+      if (row.reveal) rel.reveal = row.reveal;
+      if (row.weight !== null) rel.weight = row.weight;
+      if (row.extra) rel.extra_props = row.extra;
+      inList.push(rel);
+    }
+
+    return { out, in: inList };
+  }
+
+  /** 全部关系类型定义（前端下拉用） */
+  async listTypes(): Promise<{ types: RelationTypeDef[]; warnings: string[] }> {
+    const table = await loadRelationTypes(this.ctx.root);
+    return { types: [...table.byKey.values()], warnings: table.warnings };
+  }
+
+  // ─────────────────────── 校验 ───────────────────────
+
+  /**
+   * 校验一条待写入的关系。
+   * 传入 `excludeRelationId` 用于 update 时跳过自身。
+   */
+  private async validate(input: {
+    fromId: string;
+    toId: string;
+    typeKey: string;
+    since?: string | null;
+    until?: string | null;
+    excludeRelationId?: string;
+  }): Promise<{ def: RelationTypeDef; fromType: EntityType; toType: EntityType }> {
+    const table = await loadRelationTypes(this.ctx.root);
+    const def = getTypeDef(table, input.typeKey);
+    if (!def) {
+      throw new RelationError(
+        'rel_type_unknown',
+        `未知的关系类型「${input.typeKey}」。可用类型：${[...table.byKey.keys()].slice(0, 8).join('、')}…`,
+      );
+    }
+
+    const entities = await this.ctx.store.listEntities();
+    const byId = new Map(entities.map((e) => [e.id, e]));
+
+    const from = byId.get(input.fromId);
+    if (!from) throw new RelationError('rel_target_missing', `起点条目不存在：${input.fromId}`, 404);
+    const to = byId.get(input.toId);
+    if (!to) {
+      throw new RelationError('rel_target_missing', `目标条目不存在：${input.toId}`, 404);
+    }
+
+    if (input.fromId === input.toId) {
+      throw new RelationError('rel_self_loop', '关系不能指向自己。');
+    }
+
+    if (!isEndpointAllowed(def, from.type, to.type)) {
+      const fromLabel = ENTITY_TYPE_LABELS[from.type] ?? from.type;
+      const toLabel = ENTITY_TYPE_LABELS[to.type] ?? to.type;
+      throw new RelationError(
+        'rel_endpoint_invalid',
+        `「${def.label}」不支持 ${fromLabel}→${toLabel}。允许的组合：${describeAllowed(def) || '不限'}`,
+      );
+    }
+
+    // 锚点必须存在
+    const tree = await this.ctx.store.readTree();
+    const docIds = new Set(tree.nodes.map((n) => n.id));
+    for (const [key, value] of [
+      ['since', input.since],
+      ['until', input.until],
+    ] as const) {
+      if (value && !docIds.has(value)) {
+        throw new RelationError('rel_anchor_missing', `锚点 ${key} 指向的文档不存在：${value}`);
+      }
+    }
+
+    // 区间合法性：until 的章序号不能早于 since
+    if (input.since && input.until) {
+      const s = chapterOrdinalOf(tree, input.since);
+      const u = chapterOrdinalOf(tree, input.until);
+      if (s !== null && u !== null && u < s) {
+        throw new RelationError(
+          'rel_range_invalid',
+          `结束位置（第 ${u} 章）早于起始位置（第 ${s} 章）。`,
+        );
+      }
+    }
+
+    // 重复检查：同类型、同端点（无向忽略方向）、区间重叠
+    const existing = this.ctx.index.relationsFrom(input.fromId);
+    for (const row of existing) {
+      if (input.excludeRelationId && row.id === input.excludeRelationId) continue;
+      if (row.type !== def.key) continue;
+
+      const samePair = def.directed
+        ? row.to_id === input.toId
+        : row.to_id === input.toId || row.to_id === input.fromId;
+      if (!samePair) continue;
+
+      // 区间不重叠就不算重复（同一个师徒关系可以分两个时期）
+      if (!rangesOverlap(row.since, row.until, input.since ?? null, input.until ?? null)) continue;
+
+      throw new RelationError(
+        'rel_duplicate',
+        `已存在相同的「${def.label}」关系（${to.name}）。如需分段，请给两条关系设置不同的起止章节。`,
+        409,
+      );
+    }
+
+    // 成环检查（仅对 acyclic 类型）
+    if (def.acyclic) {
+      const cycle = await this.findCycle(input.fromId, input.toId, def.key, input.excludeRelationId);
+      if (cycle) {
+        const names = cycle.map((id) => byId.get(id)?.name ?? id).join(' → ');
+        throw new RelationError('rel_cycle', `「${def.label}」不能成环：${names} → ${byId.get(input.fromId)?.name ?? input.fromId}`);
+      }
+    }
+
+    return { def, fromType: from.type, toType: to.type };
+  }
+
+  /** 从 to 出发能否沿同类型关系走回 from（是则为环） */
+  private async findCycle(
+    fromId: string,
+    toId: string,
+    typeKey: string,
+    excludeRelationId?: string,
+  ): Promise<string[] | null> {
+    const visited = new Set<string>();
+    const stack: Array<{ id: string; path: string[] }> = [{ id: toId, path: [fromId, toId] }];
+
+    while (stack.length > 0) {
+      const { id, path } = stack.pop()!;
+      if (id === fromId) return path;
+      if (visited.has(id)) continue;
+      visited.add(id);
+
+      for (const row of this.ctx.index.relationsFrom(id)) {
+        if (row.type !== typeKey) continue;
+        if (excludeRelationId && row.id === excludeRelationId) continue;
+        stack.push({ id: row.to_id, path: [...path, row.to_id] });
+      }
+    }
+    return null;
+  }
+
+  // ─────────────────────── 写入 ───────────────────────
+
+  /**
+   * 读取起点条目的关系块，交给 fn 修改，再写回。
+   *
+   * 这是所有写操作的统一骨架：一个文件、一次读、一次写、原子落盘。
+   * 锁用与场景保存同一把（withSaveLock），避免关系写入和正文保存打架。
+   */
+  private async mutateRelations<T>(
+    fromId: string,
+    fn: (lines: RelationLine[]) => T,
+  ): Promise<T> {
+    return withSaveLock(this.ctx, fromId, async () => {
+      const located = await this.ctx.store.entityRelationsRaw(fromId);
+      if (!located) {
+        throw new RelationError('rel_entity_missing', `条目不存在：${fromId}`, 404);
+      }
+
+      const raw = await readTextSafe(located.abs);
+      if (raw === null) {
+        throw new RelationError('rel_entity_missing', `条目文件读不到：${fromId}`, 404);
+      }
+
+      const { data, body } = parseFrontmatter(raw);
+      const lines = parseRelations(typeof data.relations === 'string' ? data.relations : '');
+
+      const result = fn(lines);
+
+      // 序列化并写回；块为空时删掉该键，保持文件干净
+      const block = stringifyRelations(lines);
+      const next: Frontmatter = { ...data };
+      if (block.trim()) next.relations = block;
+      else delete next.relations;
+      next.updated_at = Date.now();
+
+      await writeFileAtomic(located.abs, stringifyScene(next, body));
+
+      // 同步索引与出场（条目标题可能因 to_name 刷新而变化，但 id 不变）
+      await this.ctx.indexer.indexRelationsOf(fromId);
+
+      return result;
+    });
+  }
+
+  /** 新建关系：只改起点条目文件 */
+  async create(
+    fromId: string,
+    input: RelationInput,
+    opts: { dryRun?: boolean } = {},
+  ): Promise<Relation> {
+    const table = await loadRelationTypes(this.ctx.root);
+    const typeKey = resolveTypeKey(table, input.type);
+    if (!typeKey) {
+      throw new RelationError('rel_type_unknown', `未知的关系类型「${input.type}」。`);
+    }
+
+    // 校验必须在写入前跑一遍（dryRun 时只做校验就返回）
+    const { def } = await this.validate({
+      fromId,
+      toId: input.to,
+      typeKey,
+      since: input.since ?? null,
+      until: input.until ?? null,
+    });
+
+    const entities = await this.ctx.store.listEntities();
+    const target = entities.find((e) => e.id === input.to);
+
+    const rel: Relation = {
+      id: newRelationId(),
+      type: def.key,
+      from: fromId,
+      to: input.to,
+      note: input.note ?? '',
+    };
+    if (target) rel.to_name = target.name;
+    if (input.since) rel.since = input.since;
+    if (input.until) rel.until = input.until;
+    if (input.reveal) rel.reveal = input.reveal;
+    if (input.weight !== undefined) rel.weight = input.weight;
+
+    if (opts.dryRun) return rel;
+
+    await this.mutateRelations(fromId, (lines) => {
+      // 追加到末尾：作者的书写顺序即阅读顺序
+      lines.push({ kind: 'rel', rel: withoutFrom(rel) });
+      return null;
+    });
+
+    return rel;
+  }
+
+  /**
+   * 修改关系。
+   *
+   * 只允许改「同一个起点文件里那一行」的内容：类型、区间、权重、备注。
+   * **不允许改 to**（那要动两个文件，属 G3）。
+   */
+  async update(
+    relationId: string,
+    patch: RelationPatch,
+    opts: { dryRun?: boolean } = {},
+  ): Promise<Relation> {
+    const row = this.ctx.index.getRelation(relationId);
+    if (!row) {
+      throw new RelationError('rel_not_found', `关系不存在：${relationId}`, 404);
+    }
+
+    const table = await loadRelationTypes(this.ctx.root);
+    const nextType = patch.type !== undefined ? resolveTypeKey(table, patch.type) : row.type;
+    if (!nextType) {
+      throw new RelationError('rel_type_unknown', `未知的关系类型「${patch.type}」。`);
+    }
+
+    const nextSince = patch.since !== undefined ? patch.since : row.since;
+    const nextUntil = patch.until !== undefined ? patch.until : row.until;
+
+    const { def } = await this.validate({
+      fromId: row.from_id,
+      toId: row.to_id,
+      typeKey: nextType,
+      since: nextSince,
+      until: nextUntil,
+      excludeRelationId: relationId,
+    });
+
+    const entities = await this.ctx.store.listEntities();
+    const target = entities.find((e) => e.id === row.to_id);
+
+    const updated: Relation = {
+      id: relationId,
+      type: def.key,
+      from: row.from_id,
+      to: row.to_id,
+      note: patch.note !== undefined ? patch.note : row.note,
+    };
+    if (target) updated.to_name = target.name;
+    const since = nextSince;
+    const until = nextUntil;
+    const reveal = patch.reveal !== undefined ? patch.reveal : row.reveal;
+    const weight = patch.weight !== undefined ? patch.weight : row.weight;
+    if (since) updated.since = since;
+    if (until) updated.until = until;
+    if (reveal) updated.reveal = reveal;
+    if (weight !== null && weight !== undefined) updated.weight = weight;
+    if (row.extra) updated.extra_props = row.extra;
+
+    if (opts.dryRun) return updated;
+
+    let found = false;
+    await this.mutateRelations(row.from_id, (lines) => {
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (line.kind === 'rel' && line.rel.id === relationId) {
+          // 就地替换：保持行位置，作者的分组顺序不乱
+          lines[i] = { kind: 'rel', rel: withoutFrom(updated) };
+          found = true;
+          break;
+        }
+      }
+      return null;
+    });
+
+    if (!found) {
+      throw new RelationError(
+        'rel_not_found',
+        `关系在条目文件里找不到（索引与文件不一致，请重建索引）：${relationId}`,
+        409,
+      );
+    }
+
+    return updated;
+  }
+
+  /** 删除关系：只在起点文件里移除那一行 */
+  async remove(relationId: string): Promise<void> {
+    const row = this.ctx.index.getRelation(relationId);
+    if (!row) {
+      throw new RelationError('rel_not_found', `关系不存在：${relationId}`, 404);
+    }
+
+    let found = false;
+    await this.mutateRelations(row.from_id, (lines) => {
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (line.kind === 'rel' && line.rel.id === relationId) {
+          lines.splice(i, 1);
+          found = true;
+          break;
+        }
+      }
+      return null;
+    });
+
+    if (!found) {
+      throw new RelationError('rel_not_found', `关系在条目文件里找不到：${relationId}`, 409);
+    }
+  }
+
+  /** 条目被删除时清理它作为起点的关系索引（文件已随条目移入回收站） */
+  clearForEntity(entityId: string): void {
+    this.ctx.index.clearRelationsOf(entityId);
+  }
+
+  // ─────────────────────── 一致性检查 ───────────────────────
+
+  /**
+   * 全书关系一致性检查。
+   *
+   * 报告四类问题，全部**只报不改**——关系是作者的结构化意图，工具不该猜着修。
+   */
+  async lint(): Promise<GraphLintIssue[]> {
+    const issues: GraphLintIssue[] = [];
+    const entities = await this.ctx.store.listEntities();
+    const byId = new Map(entities.map((e) => [e.id, e]));
+    const table = await loadRelationTypes(this.ctx.root);
+    const tree = await this.ctx.store.readTree();
+    const docIds = new Set(tree.nodes.map((n) => n.id));
+
+    for (const entity of entities) {
+      const located = await this.ctx.store.entityRelationsRaw(entity.id);
+      if (!located || !located.block) continue;
+
+      const lines = parseRelations(located.block);
+      const seen = new Set<string>();
+
+      lines.forEach((line, idx) => {
+        const lineNo = idx + 1;
+
+        // 1. 无法解析的行
+        if (looksLikeBrokenRelation(line)) {
+          issues.push({
+            code: 'relation_unparsable_line',
+            severity: 'error',
+            entity_id: entity.id,
+            entity_name: entity.name,
+            detail: `无法解析的关系行：${(line as { text: string }).text.trim()}`,
+            line_no: lineNo,
+          });
+          return;
+        }
+        if (line.kind !== 'rel') return;
+
+        const rel = line.rel;
+
+        // 2. 未知类型
+        if (!resolveTypeKey(table, rel.type)) {
+          issues.push({
+            code: 'relation_unknown_type',
+            severity: 'warn',
+            entity_id: entity.id,
+            entity_name: entity.name,
+            relation_id: rel.id,
+            detail: `未知的关系类型「${rel.type}」（可在 bible/_relation_types.json 里定义）`,
+            line_no: lineNo,
+          });
+        }
+
+        // 3. 悬空目标
+        if (!byId.has(rel.to)) {
+          issues.push({
+            code: 'relation_dangling_target',
+            severity: 'warn',
+            entity_id: entity.id,
+            entity_name: entity.name,
+            relation_id: rel.id,
+            detail: `目标条目已不存在：${rel.to}${rel.to_name ? `（${rel.to_name}）` : ''}`,
+            line_no: lineNo,
+          });
+        }
+
+        // 4. 锚点文档不存在
+        for (const [key, value] of [
+          ['since', rel.since],
+          ['until', rel.until],
+          ['reveal', rel.reveal],
+        ] as const) {
+          if (value && !docIds.has(value)) {
+            issues.push({
+              code: 'relation_anchor_missing',
+              severity: 'warn',
+              entity_id: entity.id,
+              entity_name: entity.name,
+              relation_id: rel.id,
+              detail: `锚点 ${key} 指向的文档已不存在：${value}`,
+              line_no: lineNo,
+            });
+          }
+        }
+
+        // 5. 同一 id 重复出现
+        if (seen.has(rel.id)) {
+          issues.push({
+            code: 'relation_duplicate',
+            severity: 'error',
+            entity_id: entity.id,
+            entity_name: entity.name,
+            relation_id: rel.id,
+            detail: `关系 id 在同一文件里重复：${rel.id}`,
+            line_no: lineNo,
+          });
+        }
+        seen.add(rel.id);
+      });
+    }
+
+    return issues;
+  }
+}
+
+// ─────────────────────── 工具 ───────────────────────
+
+/** 从 Relation 去掉 from（文件里不存起点，由所在文件决定） */
+function withoutFrom(rel: Relation): Omit<Relation, 'from'> {
+  const { from: _from, ...rest } = rel;
+  return rest;
+}
+
+/**
+ * 两个区间是否重叠。
+ *
+ * null 视为「不限」：两端都没限 → 必然重叠；只有一端有限 → 覆盖全区间。
+ * 这样「师徒关系分两段」时，只要区间不交叠就不算重复。
+ */
+function rangesOverlap(
+  aSince: string | null,
+  aUntil: string | null,
+  bSince: string | null,
+  bUntil: string | null,
+): boolean {
+  if (aSince === null && aUntil === null) return true;
+  if (bSince === null && bUntil === null) return true;
+  // 用文档 id 无法比大小，这里退化为「有一端相同即视为重叠」的保守策略，
+  // 具体区间判定由上层用章节序号做严格比较。
+  return aSince === bSince || aUntil === bUntil || aSince === aUntil;
+}

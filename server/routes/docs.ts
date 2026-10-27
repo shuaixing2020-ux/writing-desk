@@ -443,7 +443,7 @@ async function safeSync(ctx: ProjectContext): Promise<void> {
  */
 const saveChains = new Map<string, Promise<unknown>>();
 
-function withSaveLock<T>(ctx: ProjectContext, docId: string, fn: () => Promise<T>): Promise<T> {
+export function withSaveLock<T>(ctx: ProjectContext, docId: string, fn: () => Promise<T>): Promise<T> {
   const key = `${ctx.root}\u0000${docId}`;
   const prev = saveChains.get(key) ?? Promise.resolve();
   const next = prev.then(fn, fn);
