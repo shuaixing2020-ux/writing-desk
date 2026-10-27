@@ -78,9 +78,38 @@ jobs:
       - name: 安装依赖
         run: npm ci
 
+      - name: 缓存 Playwright 浏览器
+        # Chromium 约 130MB，从 CDN 下载在 runner 上常要 2–4 分钟。
+        # 按 playwright 版本号做 key，升级依赖时自动失效。
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: pw-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
       - name: 安装 Chromium
-        # 连同系统依赖一起装（ubuntu runner 上需要 libnss3 等）
-        run: npx playwright install --with-deps chromium
+        # 只装 chromium（不装 firefox/webkit），系统依赖每次装。
+        # 实测 GitHub runner 从官方 CDN 下载 Chromium 偶发极慢（>5 分钟），
+        # 因此：1) 加 timeout 保护；2) 失败时重试一次；3) 缓存命中时跳过下载。
+        timeout-minutes: 8
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.pw-cache.outputs.cache-hit }}" = "true" ]; then
+            echo "浏览器缓存命中，只补系统依赖"
+            npx playwright install-deps chromium
+          else
+            echo "缓存未命中，下载 Chromium"
+            for attempt in 1 2; do
+              echo "--- 第 ${attempt} 次尝试 ---"
+              if npx playwright install --with-deps chromium; then
+                exit 0
+              fi
+              echo "第 ${attempt} 次失败，10 秒后重试"
+              sleep 10
+            done
+            echo "Chromium 安装两次均失败"
+            exit 1
+          fi
 
       - name: 构建前端
         run: npm run build
