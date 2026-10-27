@@ -228,17 +228,20 @@ export async function buildServer(dataDir: string): Promise<{
     // Fastify 内置错误（JSON 解析失败 / body 过大 / 404）自带 statusCode 与 code，
     // 自己的 HttpError 也带；统一从运行时读，不做 instanceof 之外的类型假设。
     const raw = error as unknown as { statusCode?: unknown; code?: unknown };
+
+    // 统一从运行时属性读：HttpError、EntityNameConflictError、Fastify 内置错误
+    // 都自带 statusCode 与 code，不需要 instanceof 白名单。
     const status =
-      error instanceof HttpError
-        ? error.statusCode
-        : typeof raw.statusCode === 'number'
-          ? raw.statusCode
+      typeof raw.statusCode === 'number'
+        ? raw.statusCode
+        : error instanceof HttpError
+          ? error.statusCode
           : 500;
     const code =
-      error instanceof HttpError
-        ? error.code
-        : typeof raw.code === 'string'
-          ? raw.code
+      typeof raw.code === 'string'
+        ? raw.code
+        : error instanceof HttpError
+          ? error.code
           : 'error';
 
     // 4xx 是用户输入问题，只记一行；5xx 是程序问题，必须留栈

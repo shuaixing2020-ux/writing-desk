@@ -26,7 +26,7 @@ import type {
   SceneContent,
   TypesetPreset,
 } from '../../shared/types.ts';
-import { DEFAULT_AI_CONFIG, DEFAULT_TYPESET } from '../../shared/types.ts';
+import { DEFAULT_AI_CONFIG, DEFAULT_TYPESET, ENTITY_TYPE_LABELS } from '../../shared/types.ts';
 import { ensureDir, exists, readJsonSafe, readTextSafe, rmSafe, writeFileAtomic, writeJsonAtomic } from '../util/atomic.ts';
 import { fmArray, fmNumber, fmString, parseFrontmatter, stringifyScene, type Frontmatter } from '../util/frontmatter.ts';
 import { pad, safeName, ulid } from '../util/id.ts';
@@ -766,9 +766,33 @@ export class ProjectStore {
         nodes?: DocNode[];
         name?: string;
         parent_rel?: string;
+        kind?: 'entity' | 'doc';
+        entity?: { id: string; type: string; name: string; dir: string; file?: string };
       }>(path.join(dir, '_trash.json'), {});
       const payload = (await fs.readdir(dir)).filter((n) => n !== '_trash.json');
       if (payload.length === 0) throw new Error('回收站条目为空');
+
+      // ── 条目（设定库）走 bible/<类型目录>/，绝不能被丢进 manuscript/ ──
+      if (info.entity) {
+        const ent = info.entity;
+        const targetDir = path.join(this.paths.bible, ent.dir || this.entityDir(ent.type));
+        await ensureDir(targetDir);
+
+        const item = ent.file && payload.includes(ent.file) ? ent.file : payload[0];
+        const src = path.join(dir, item);
+
+        const desired = path.join(targetDir, item);
+        if (await exists(desired)) {
+          // 目录里已有同名文件：不覆盖，报冲突让作者决定
+          throw new EntityNameConflictError(
+            `bible/${ent.dir}/ 下已有同名文件「${item}」，未恢复以免覆盖。请先重命名或删除现有文件。`,
+            ent.id,
+          );
+        }
+        await fs.rename(src, desired);
+        await rmSafe(dir);
+        return;
+      }
 
       const item = info.name && payload.includes(info.name) ? info.name : payload[0];
       const src = path.join(dir, item);
@@ -792,20 +816,41 @@ export class ProjectStore {
     });
   }
 
-  async listTrash(): Promise<Array<{ id: string; name: string; deleted_at: number; nodes: DocNode[] }>> {
+  async listTrash(): Promise<
+    Array<{
+      id: string;
+      name: string;
+      deleted_at: number;
+      nodes: DocNode[];
+      /** 条目删除时带类型信息，用于回收站正确分类与恢复 */
+      entity?: { id: string; type: string; name: string; dir: string; file?: string };
+    }>
+  > {
     const dirs = await fs.readdir(this.paths.trash).catch(() => [] as string[]);
-    const out: Array<{ id: string; name: string; deleted_at: number; nodes: DocNode[] }> = [];
+    const out: Array<{
+      id: string;
+      name: string;
+      deleted_at: number;
+      nodes: DocNode[];
+      entity?: { id: string; type: string; name: string; dir: string; file?: string };
+    }> = [];
     for (const d of dirs) {
       if (d.startsWith('.')) continue;
-      const info = await readJsonSafe<{ deleted_at?: number; nodes?: DocNode[] }>(
-        path.join(this.paths.trash, d, '_trash.json'),
-        {},
-      );
+      const info = await readJsonSafe<{
+        deleted_at?: number;
+        nodes?: DocNode[];
+        kind?: string;
+        entity?: { id: string; type: string; name: string; dir: string; file?: string };
+      }>(path.join(this.paths.trash, d, '_trash.json'), {});
+
+      // 名称优先级：条目名 > 根文档标题 > 目录名（目录名含时间戳，不可读）
+      const name = info.entity?.name ?? info.nodes?.[0]?.title ?? d;
       out.push({
         id: d,
-        name: info.nodes?.[0]?.title ?? d,
+        name,
         deleted_at: info.deleted_at ?? 0,
         nodes: info.nodes ?? [],
+        ...(info.entity ? { entity: info.entity } : {}),
       });
     }
     return out.sort((a, b) => b.deleted_at - a.deleted_at);
@@ -831,8 +876,11 @@ export class ProjectStore {
         const raw = await readTextSafe(path.join(dirPath, f));
         if (raw === null) continue;
         const { data, body } = parseFrontmatter(raw);
+        // 缺 id 的文件（作者手工放进 bible/ 的）在这里补一个稳定 id。
+        // 不补的话 id 会退化成「目录-文件名」，文件一改名关系引用就断。
+        const resolvedId = await this.ensureEntityId(dirPath, f, data, raw);
         out.push({
-          id: fmString(data, 'id') || `entity-${dirName}-${stripExt(f)}`,
+          id: resolvedId,
           type: fmString(data, 'type', type) as EntityType,
           name: fmString(data, 'name', stripExt(f)),
           aliases: fmArray(data, 'aliases'),
@@ -850,6 +898,131 @@ export class ProjectStore {
     return ENTITY_DIRS[type] ?? (safeName(type, 20).toLowerCase() || 'other');
   }
 
+  /**
+   * 确保条目文件带稳定 id。缺 id 时补写。
+   *
+   * 为什么要补：id 是关系的引用锚点。若 id 来自文件名（`entity-目录-文件名`），
+   * 作者一改文件名关系就全断，而且这种断链是静默的。
+   *
+   * 安全策略：
+   *   1. 先把原文件备份到 .studio/migrations/<时间戳>/bible/<目录>/（原样复制）
+   *   2. 再用原子写把 id 写回原文件，其余内容逐字不动
+   *   3. 失败（只读盘、权限不足）不抛错，返回回退 id，下次读取再试
+   */
+  private async ensureEntityId(
+    dirPath: string,
+    fileName: string,
+    data: Frontmatter,
+    raw: string,
+  ): Promise<string> {
+    const existing = fmString(data, 'id');
+    if (existing) return existing;
+
+    const fallbackId = `entity-${path.basename(dirPath)}-${stripExt(fileName)}`;
+    const newId = ulid();
+
+    try {
+      const abs = path.join(dirPath, fileName);
+
+      // 1. 先备份（失败也继续：备份是保险，不是前置条件）
+      try {
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const backupDir = path.join(this.paths.studio, 'migrations', stamp, 'bible', path.basename(dirPath));
+        await ensureDir(backupDir);
+        await writeFileAtomic(path.join(backupDir, fileName), raw);
+      } catch (err) {
+        console.error(`[store] 补 id 前备份失败（继续）: ${fileName}`, err);
+      }
+
+      // 2. 原子写回：id 放在最前面，其余键顺序不变
+      const { data: oldData, body } = parseFrontmatter(raw);
+      const next: Frontmatter = { id: newId, ...oldData };
+      await writeFileAtomic(abs, stringifyScene(next, body));
+
+      return newId;
+    } catch (err) {
+      // 3. 补写失败不能让整个设定库打不开
+      console.error(`[store] 补写条目 id 失败（本次用回退 id，下次再试）: ${fileName}`, err);
+      return fallbackId;
+    }
+  }
+
+  /**
+   * 在全部类型目录里按 id 找条目的文件。
+   *
+   * 为什么必须搜全部目录：改类型时目标目录里当然没有旧文件，
+   * 只在目标目录找会「找不到旧文件 → 在新目录新建」，
+   * 结果同一个 id 出现两份文件（角色目录一份、势力目录各一份），
+   * 两份都能被读出来，列表里出现重复条目 —— 那是数据损坏。
+   */
+  private async findEntityFile(id: string): Promise<{ abs: string; typeDir: string } | null> {
+    let dirs: string[];
+    try {
+      dirs = await fs.readdir(this.paths.bible);
+    } catch {
+      return null;
+    }
+    for (const dirName of dirs) {
+      const dirPath = path.join(this.paths.bible, dirName);
+      const st = await fs.stat(dirPath).catch(() => null);
+      if (!st?.isDirectory()) continue;
+      let files: string[];
+      try {
+        files = await fs.readdir(dirPath);
+      } catch {
+        continue;
+      }
+      for (const f of files) {
+        if (!f.endsWith('.md') || f.startsWith('_')) continue;
+        const abs = path.join(dirPath, f);
+        const raw = await readTextSafe(abs);
+        if (raw === null) continue;
+        if (fmString(parseFrontmatter(raw).data, 'id') === id) {
+          return { abs, typeDir: dirName };
+        }
+      }
+    }
+    return null;
+  }
+
+  /** 在某个类型目录里找与给定名称「实质相同」的条目文件（用于重名检查） */
+  private async findNameCollision(
+    dirPath: string,
+    name: string,
+    exceptId: string | null,
+  ): Promise<{ abs: string; id: string; name: string } | null> {
+    /** 归一化：去首尾空格 + 折叠内部连续空白 + 小写。中文不受影响，英文大小写视为同一名称。 */
+    const normalize = (v: string): string => v.trim().replace(/\s+/g, ' ').toLowerCase();
+    const target = normalize(name);
+    if (!target) return null;
+
+    let files: string[];
+    try {
+      files = await fs.readdir(dirPath);
+    } catch {
+      return null;
+    }
+    for (const f of files) {
+      if (!f.endsWith('.md') || f.startsWith('_')) continue;
+      const abs = path.join(dirPath, f);
+      const raw = await readTextSafe(abs);
+      if (raw === null) continue;
+      const { data } = parseFrontmatter(raw);
+      const id = fmString(data, 'id');
+      if (exceptId && id === exceptId) continue; // 自己不算冲突
+
+      const existingName = fmString(data, 'name', stripExt(f));
+      if (normalize(existingName) === target) {
+        return { abs, id, name: existingName };
+      }
+      // 文件名撞车同样危险：即便名称不同，写入时会落到同一个文件
+      if (normalize(stripExt(f)) === normalize(safeName(name))) {
+        return { abs, id, name: existingName };
+      }
+    }
+    return null;
+  }
+
   async saveEntity(input: {
     id?: string;
     type: EntityType;
@@ -864,69 +1037,105 @@ export class ProjectStore {
       const dirPath = path.join(this.paths.bible, dirName);
       await ensureDir(dirPath);
 
-      let existingPath: string | null = null;
-      let existing: Entity | null = null;
-      if (input.id) {
-        const all = await this.listEntities();
-        existing = all.find((e) => e.id === input.id) ?? null;
-        if (existing) {
-          const files = await fs.readdir(dirPath).catch(() => [] as string[]);
-          for (const f of files) {
-            if (!f.endsWith('.md')) continue;
-            const raw = await readTextSafe(path.join(dirPath, f));
-            if (raw && fmString(parseFrontmatter(raw).data, 'id') === input.id) {
-              existingPath = path.join(dirPath, f);
-              break;
-            }
-          }
-          // 类型变了要换目录
-          if (existingPath && existing.type !== type) {
-            await fs.rename(existingPath, path.join(dirPath, path.basename(existingPath)));
-            existingPath = path.join(dirPath, path.basename(existingPath));
-          }
-        }
-      }
-
-      const now = Date.now();
-      const id = existing?.id ?? input.id ?? ulid();
       const name = input.name.trim() || '未命名条目';
-      const fileName = `${safeName(name)}.md`;
-      const target = existingPath ?? path.join(dirPath, fileName);
+      const id = input.id ?? ulid();
+      const now = Date.now();
 
-      const data: Frontmatter = {
-        id,
-        type,
-        name,
-        aliases: input.aliases ?? existing?.aliases ?? [],
-        created_at: existing?.created_at || now,
-        updated_at: now,
-      };
-      // 自定义字段平铺，方便人工编辑
-      for (const [k, v] of Object.entries(input.fields ?? existing?.fields ?? {})) {
-        if (v !== '' && v !== undefined) data[k] = v;
+      // ── 1. 找旧文件（全目录搜索，不再只看目标目录）──
+      let existingPath: string | null = null;
+      let oldData: Frontmatter = {};
+      let oldBody = '';
+      let existingTypeDir: string | null = null;
+
+      if (input.id) {
+        const found = await this.findEntityFile(input.id);
+        if (found) {
+          existingPath = found.abs;
+          existingTypeDir = found.typeDir;
+          const raw = await fs.readFile(found.abs, 'utf8');
+          const parsed = parseFrontmatter(raw);
+          oldData = parsed.data;
+          oldBody = parsed.body;
+        }
       }
 
-      await writeFileAtomic(
-        target,
-        stringifyScene(data, input.description ?? existing?.description ?? ''),
-      );
+      // ── 2. 重名检查（同类型目录内，排除自己）──
+      const collision = await this.findNameCollision(dirPath, name, existingPath ? id : null);
+      if (collision) {
+        throw new EntityNameConflictError(
+          `已有同名的「${ENTITY_TYPE_LABELS[type] ?? type}」条目：${collision.name}`,
+          collision.id,
+        );
+      }
 
-      // 改名导致文件名变化时，删掉旧文件
-      if (existingPath && path.basename(existingPath) !== fileName) {
-        const desired = path.join(dirPath, fileName);
-        if (desired !== existingPath) {
-          await fs.rename(existingPath, desired).catch(() => {});
+      // ── 3. 组装新 frontmatter ──
+      //
+      // 关键：以旧文件的 frontmatter 为**基底**，只覆盖本次要改的键。
+      // 早先的实现从零构造，导致 relations、x- 前缀扩展键等一切它不认识的键
+      // 会在每次保存后消失 —— 关系图谱会因此每次都清零。
+      const data: Frontmatter = { ...oldData };
+
+      // 保留的保留、要改的就地改；保证这七个核心键顺序稳定
+      data.id = id;
+      data.type = type;
+      data.name = name;
+      data.aliases = input.aliases ?? fmArray(oldData, 'aliases');
+      if (fmNumber(oldData, 'created_at', 0) === 0) data.created_at = now;
+      data.updated_at = now;
+
+      // 自定义字段：本次显式传入则以传入为准，否则沿用旧值。
+      // 注意这里只处理「调用方明确给出的字段」，不删除旧文件里已有的其它键。
+      const incomingFields = input.fields ?? {};
+      for (const [k, v] of Object.entries(incomingFields)) {
+        if (v === '' || v === undefined) continue;
+        data[k] = v;
+      }
+
+      const description = input.description ?? oldBody;
+
+      // ── 4. 决定目标路径 ──
+      const fileName = `${safeName(name)}.md`;
+      const desired = path.join(dirPath, fileName);
+
+      // 类型没变、名字没变 → 原地覆盖；否则写新文件再删旧的（先写后删，永不出现零份）
+      const sameLocation =
+        existingPath !== null &&
+        existingTypeDir === dirName &&
+        path.basename(existingPath) === fileName;
+      const target = sameLocation ? existingPath! : desired;
+
+      // 目标路径被别的文件占着（文件名撞车但名称不同）→ 冲突，不覆盖
+      if (!sameLocation && existingPath !== desired) {
+        const occupied = await exists(desired);
+        if (occupied) {
+          const raw = await readTextSafe(desired);
+          const occupiedId = raw ? fmString(parseFrontmatter(raw).data, 'id') : '';
+          if (occupiedId !== id) {
+            throw new EntityNameConflictError(
+              `已有同名文件，无法保存：${fileName}`,
+              occupiedId || '(unknown)',
+            );
+          }
         }
+      }
+
+      await writeFileAtomic(target, stringifyScene(data, description));
+
+      // ── 5. 写完再清理旧文件（顺序不能反）──
+      if (existingPath && existingPath !== target) {
+        await fs.rm(existingPath, { force: true }).catch((err) => {
+          console.error(`[store] 清理旧条目文件失败（不影响新文件）: ${existingPath}`, err);
+        });
       }
 
       return {
         id,
         type,
         name,
-        aliases: input.aliases ?? existing?.aliases ?? [],
-        fields: input.fields ?? existing?.fields ?? {},
-        description: input.description ?? existing?.description ?? '',
-        created_at: existing?.created_at || now,
+        aliases: Array.isArray(data.aliases) ? (data.aliases as string[]) : [],
+        fields: pickCustomFields(data),
+        description,
+        created_at: fmNumber(data, 'created_at', now),
         updated_at: now,
       };
     });
@@ -950,6 +1159,16 @@ export class ProjectStore {
           await writeJsonAtomic(path.join(destDir, '_trash.json'), {
             deleted_at: Date.now(),
             root_doc_id: entityId,
+            // kind 让回收站能区分「条目」与「文档」，此前条目这里只写 nodes: []，
+            // 回收站只好把它当成场景显示，名称退化成一串时间戳目录名。
+            kind: 'entity',
+            entity: {
+              id: entityId,
+              type: target.type,
+              name: target.name,
+              dir: this.entityDir(target.type),
+              file: f,
+            },
             nodes: [],
           });
           return;
@@ -1000,6 +1219,51 @@ export class ProjectStore {
     }
     return { word_count, scene_count };
   }
+}
+
+/**
+ * 条目标题冲突（同类型目录内已存在同名条目）。
+ *
+ * 用独立错误类型而不是裸 Error，是为了让路由层能稳定映射成 409，
+ * 也让测试能精确断言「是冲突而不是别的错误」。
+ */
+export class EntityNameConflictError extends Error {
+  /**
+   * 带上 statusCode 与 code，与 routes/shared.ts 的 HttpError 保持同一形态。
+   *
+   * 为什么不用 instanceof：Fastify 5 在部分路径上会把抛出的异常重新包装，
+   * 包装后 instanceof 判定失效（实测 400/404 正常、只有这里变 500）。
+   * 全局错误处理器因此统一从运行时属性读 statusCode/code，
+   * 这个类只要提供这两个属性就能被正确识别成 409。
+   */
+  readonly statusCode = 409;
+  readonly code = 'entity_name_conflict';
+  readonly conflictWithId: string;
+  constructor(message: string, conflictWithId: string) {
+    super(message);
+    this.name = 'EntityNameConflictError';
+    this.conflictWithId = conflictWithId;
+  }
+}
+
+/**
+ * 从 frontmatter 里挑出「自定义字段」（设定库界面里展示的那部分）。
+ *
+ * 与 parseFields 的区别：这里除核心键外，还要排除 relations 与 x- 前缀的键。
+ * 理由：relations 是结构化数据（多行块），x- 是给扩展用的，
+ * 两者若混进 fields，会在编辑表单里显示成可随意编辑的文本框，
+ * 一保存就把关系结构改坏了。
+ */
+function pickCustomFields(data: Frontmatter): Record<string, string> {
+  const reserved = new Set(['id', 'type', 'name', 'aliases', 'created_at', 'updated_at', 'relations']);
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(data)) {
+    if (reserved.has(k) || k.startsWith('x-')) continue;
+    if (v === null || v === undefined) continue;
+    if (typeof v === 'object') continue; // 结构化值不摊平
+    out[k] = Array.isArray(v) ? v.join(', ') : String(v);
+  }
+  return out;
 }
 
 function parseFields(data: Frontmatter): Record<string, string> {
