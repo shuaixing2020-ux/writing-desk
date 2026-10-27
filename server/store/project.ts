@@ -985,6 +985,25 @@ export class ProjectStore {
     return null;
   }
 
+  /**
+   * 读某个条目的 relations 块原文 + 文件位置。
+   *
+   * 返回**原文**而不是解析结果：关系格式模块（server/graph）属于上层，
+   * store 层不该依赖它，由调用方决定怎么解析。
+   * 这也保证了「无法解析的行原样保留」—— store 只搬运文本，绝不改内容。
+   */
+  async entityRelationsRaw(
+    entityId: string,
+  ): Promise<{ abs: string; block: string; data: Frontmatter } | null> {
+    const found = await this.findEntityFile(entityId);
+    if (!found) return null;
+    const raw = await readTextSafe(found.abs);
+    if (raw === null) return null;
+    const { data } = parseFrontmatter(raw);
+    const block = typeof data.relations === 'string' ? data.relations : '';
+    return { abs: found.abs, block, data };
+  }
+
   /** 在某个类型目录里找与给定名称「实质相同」的条目文件（用于重名检查） */
   private async findNameCollision(
     dirPath: string,
