@@ -30,6 +30,7 @@ import { panels } from './components/panels/index.ts';
 import { applyEditorSettings, createShell, ICONS, type ShellHandle } from './components/shell.ts';
 import { buildMobileNav, isMobileViewport, MobileShell } from './components/mobile.ts';
 import { createTree, type TreeHandle } from './components/tree.ts';
+import { GraphView } from './components/graph/graph-view.ts';
 import { api, ApiClientError, connectEvents, draftCache, setActiveProject } from './lib/api.ts';
 import type { AppActions, PanelContext, PanelInstance } from './lib/contracts.ts';
 import { fmtNum, h, mount, rafThrottle } from './lib/dom.ts';
@@ -163,6 +164,7 @@ async function main(): Promise<void> {
   let tree: TreeHandle | null = null;
   let shell: ShellHandle | null = null;
   let mobile: MobileShell | null = null;
+  let graphView: GraphView | null = null;
   let unsubscribe: (() => void) | null = null;
   const timers: Array<ReturnType<typeof setInterval>> = [];
 
@@ -777,7 +779,60 @@ async function main(): Promise<void> {
     }
   }
 
+  /**
+   * 打开关系图谱。
+   *
+   * 走全屏视图容器（与设置页同一个），不占 inspector 的 300px ——
+   * 那个宽度画不下有意义的图。
+   */
+  function openGraphView(): void {
+    if (graphView) {
+      graphView.destroy();
+      graphView = null;
+    }
+
+    const sh = shell;
+    if (!sh) return;
+    const body = sh.viewBody;
+
+    sh.setView(ICONS.bible, '关系图谱');
+    body.textContent = '';
+
+    graphView = new GraphView({
+      ctx: {
+        store,
+        api,
+        actions,
+        toast,
+        openOverlay,
+        closeOverlay: () => overlays.close(),
+        refresh: () => {},
+      },
+      onClose: () => closeGraphView(),
+    });
+    body.appendChild(graphView.el);
+    sh.showView(true);
+
+    void graphView.load();
+  }
+
+  function closeGraphView(): void {
+    if (!graphView) return;
+    graphView.destroy();
+    graphView = null;
+    shell?.showView(false);
+    // 全屏视图可能原本是设置页打开的，关闭后统一回到右栏面板
+    shell?.setView(ICONS.bible, '');
+    const body = shell?.viewBody;
+    if (body) body.textContent = '';
+    syncPanel();
+  }
+
   function closeView(): void {
+    if (graphView) {
+      closeGraphView();
+      return;
+    }
     if (!openViewKind) return;
     openViewKind = null;
     destroyPanel();
@@ -1094,6 +1149,14 @@ async function main(): Promise<void> {
 
     items.push(
       { id: 'save', title: '保存当前场景', group: '写作', hint: `${mod}S`, icon: ICONS.save, run: () => saveNow() },
+      {
+        id: 'graph',
+        title: '打开关系图谱',
+        group: '设定',
+        hint: '',
+        icon: ICONS.bible,
+        run: () => openGraphView(),
+      },
       {
         id: 'new-scene',
         title: '新建场景',

@@ -75,6 +75,16 @@ export const panel: PanelDef = {
     const contentHost = h('div', { class: 'p-bible-content' });
     shell.body.appendChild(contentHost);
 
+    // 外部（图谱节点点击、搜索结果）请求聚焦某个条目时，直接打开它的详情。
+    // 没有这个监听，jumpToEntity 只会把右栏切到设定库，作者还得自己再找一遍。
+    const onFocusEntity = (ev: Event): void => {
+      const id = (ev as CustomEvent<{ id?: string }>).detail?.id;
+      if (!id || destroyed) return;
+      selectedId = id;
+      void openDetail(id);
+    };
+    window.addEventListener('writingdesk:focus-entity', onFocusEntity);
+
     // ─────────────────────── 列表 ───────────────────────
 
     function renderList(): void {
@@ -642,6 +652,7 @@ export const panel: PanelDef = {
         renderList();
       },
       destroy(): void {
+        window.removeEventListener('writingdesk:focus-entity', onFocusEntity);
         destroyed = true;
         container.textContent = '';
       },
