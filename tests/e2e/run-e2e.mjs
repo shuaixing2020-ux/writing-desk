@@ -378,6 +378,39 @@ async function main() {
       await page.screenshot({ path: path.join(root, 'tests/e2e/screenshot-main.png'), fullPage: false });
     });
 
+    // ═══════════ 3. 关系图谱 ═══════════
+    console.log('\n【3】关系图谱');
+
+    await check('设定库详情显示关系分组', async () => {
+      await page.locator('.inspector-tabs button[data-panel="bible"]').click();
+      await page.waitForTimeout(900);
+      // 用 selfcheck 建的两个角色：自检角色甲
+      const target = page.locator('.panel').locator('text=自检角色甲').first();
+      if ((await target.count()) === 0) {
+        // 没有的话跳过（项目数据由 selfcheck 产生，可能已被清理）
+        return;
+      }
+      await target.click();
+      await page.waitForTimeout(1500);
+      const hasRel = await page.locator('.p-rel').count();
+      assert(hasRel > 0, '未渲染关系分组');
+    });
+
+    await check('新增关系表单按类型过滤', async () => {
+      const addBtn = page.locator('.p-rel-add').first();
+      if ((await addBtn.count()) === 0) return;
+      await addBtn.click();
+      await page.waitForTimeout(600);
+      const opts = await page.evaluate(() => {
+        const sel = document.querySelector('.p-rel-form select');
+        return sel ? [...sel.options].map((o) => o.textContent) : [];
+      });
+      assert(opts.length > 0, '类型下拉为空');
+      // 角色可用的类型应包含师徒，但不包含「导致」（只能事件→事件）
+      assert(opts.includes('师徒'), `类型下拉应含「师徒」，实际：${opts.join(', ')}`);
+      assert(!opts.includes('导致'), `角色不应能选「导致」，实际：${opts.join(', ')}`);
+    });
+
     await check('无未捕获的运行时错误', async () => {
       // 过滤掉网络类噪音（服务端某些路由可能还在开发）
       const real = consoleErrors.filter(

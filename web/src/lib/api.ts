@@ -7,6 +7,12 @@
 
 import type {
   AiConfig,
+  GraphLintIssue,
+  Relation,
+  RelationInput,
+  RelationPatch,
+  RelationTypeDef,
+  RelationView,
   AiResponse,
   AiStatus,
   BackupTarget,
@@ -253,6 +259,24 @@ export const api = {
   // ─────────── 导出设置 ───────────
   saveTypeset: (typeset: TypesetPreset) =>
     patch<ProjectMeta>(`${projectPrefix()}/meta`, { typeset }),
+
+  // ─────────── 关系图谱 ───────────
+  listRelations: (entityId: string) =>
+    get<RelationView>(`${projectPrefix()}/entities/${encodeURIComponent(entityId)}/relations`),
+
+  createRelation: (entityId: string, input: RelationInput) =>
+    post<Relation>(`${projectPrefix()}/entities/${encodeURIComponent(entityId)}/relations`, input),
+
+  updateRelation: (relationId: string, patchBody: RelationPatch) =>
+    patch<Relation>(`${projectPrefix()}/relations/${encodeURIComponent(relationId)}`, patchBody),
+
+  deleteRelation: (relationId: string) =>
+    del<{ ok: true }>(`${projectPrefix()}/relations/${encodeURIComponent(relationId)}`),
+
+  listRelationTypes: () =>
+    get<{ types: RelationTypeDef[]; warnings: string[] }>(`${projectPrefix()}/relation-types`),
+
+  lintRelations: () => get<GraphLintIssue[]>(`${projectPrefix()}/relations/lint`),
 
   // ─────────── AI 接入（预留，默认关闭） ───────────
   getAi: () => get<{ config: AiConfig; status: AiStatus }>(`${projectPrefix()}/ai`),
