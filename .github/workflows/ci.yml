@@ -7,16 +7,33 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# 同一分支的旧运行自动取消，省 runner 时间
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # package-lock.json 的 resolved 字段指向 registry.npmmirror.com（作者在国内开发时的默认源）。
+  # GitHub runner 访问该源不稳定，而 npm 默认会严格按 lockfile 里的 host 拉包。
+  # 这里把 host 改写成官方源；integrity 校验值不变，装出来的内容完全一致。
+  # 不改 package-lock.json 本身，避免产生一个巨大的 diff。
+  NPM_CONFIG_REGISTRY: https://registry.npmjs.org/
+  NPM_CONFIG_REPLACE_REGISTRY_HOST: always
+
 jobs:
   test:
-    name: Node ${{ matrix.node }} · ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+    name: Node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        # 22 是最低支持版本（node:sqlite 从 22.6 起可用），24 是开发版本
+        # 22 = 最低支持版本（node:sqlite 与 TS 类型擦除从 22.18 起默认可用）
+        # 24 = 开发与日常使用版本
         node: ['22', '24']
-        os: [ubuntu-latest]
 
     steps:
       - uses: actions/checkout@v4
@@ -40,13 +57,16 @@ jobs:
         run: npm run build
 
       - name: 集成自检
-        # 真实启动服务并跑 28 项 HTTP 检查（含稿件安全、导出、路径穿越防护）。
-        # 自检内部用临时数据目录，不会碰到仓库里的 data/。
+        # 真实启动服务并跑 30 项 HTTP 检查：原子写、崩溃恢复、索引重建、
+        # 标点规整、备份管线、路径穿越防护等。内部使用临时数据目录，
+        # 不会碰到仓库里的 data/。
         run: npm run selfcheck
 
   e2e:
     name: 端到端（真实浏览器）
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+
     steps:
       - uses: actions/checkout@v4
 
@@ -59,10 +79,52 @@ jobs:
         run: npm ci
 
       - name: 安装 Chromium
+        # 连同系统依赖一起装（ubuntu runner 上需要 libnss3 等）
         run: npx playwright install --with-deps chromium
 
       - name: 构建前端
         run: npm run build
 
-      - name: 端到端测试
+      - name: 桌面端到端
+        # 脚本自己起服务、自己用临时数据目录、自己清理
         run: npm run test:e2e
+
+      - name: 移动端端到端
+        # mobile-e2e.mjs 需要服务已在 7788 运行，所以这里起一个真实服务。
+        # 先 seed 出示例作品，避免依赖「前端首次启动自动建项目」的时序。
+        run: |
+          set -euo pipefail
+          npm run seed
+          node --disable-warning=ExperimentalWarning server/main.ts > /tmp/wd-server.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+
+          ready=0
+          for i in $(seq 1 60); do
+            if curl -fsS -o /dev/null http://127.0.0.1:7788/api/health; then
+              echo "服务已就绪（第 ${i} 次探测）"
+              ready=1
+              break
+            fi
+            sleep 0.5
+          done
+          if [ "$ready" -ne 1 ]; then
+            echo "服务在 30 秒内未就绪"
+            tail -n 80 /tmp/wd-server.log || true
+            exit 1
+          fi
+
+          node --disable-warning=ExperimentalWarning tests/e2e/mobile-e2e.mjs
+
+      - name: 失败时输出服务日志
+        if: failure()
+        run: tail -n 80 /tmp/wd-server.log || true
+
+      - name: 上传端到端截图
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-screenshots
+          path: tests/e2e/*.png
+          if-no-files-found: ignore
+          retention-days: 7

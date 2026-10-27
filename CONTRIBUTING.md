@@ -22,7 +22,8 @@
 
 ## 开发环境
 
-需要 Node.js ≥ 22.6（用到 `node:sqlite` 与原生 TypeScript 类型擦除）。
+需要 **Node.js ≥ 22.18**（用到内建 `node:sqlite` 与原生 TypeScript 类型擦除，两者都是从 22.18 起默认可用）。
+推荐用 Node 24（CI 与日常开发都在这个版本上跑）。
 
 ```bash
 git clone https://github.com/shuaixing2020-ux/writing-desk.git
@@ -47,20 +48,29 @@ npm run build:watch    # 另开一个终端
 
 ```bash
 npm run typecheck      # 类型检查，必须 0 错误
-npm test               # 单元测试
+npm test               # 单元测试（41 项）
 npm run build          # 前端构建
-npm run selfcheck      # 集成自检（28 项，会真实起服务）
+npm run selfcheck      # 集成自检（30 项，会真实起服务跑 HTTP）
 npm run test:e2e       # 端到端（改了保存/编辑器/关键流程时必须跑）
 ```
 
-移动端改动额外跑：
+移动端改动额外跑（需服务已在 7788 运行）：
 
 ```bash
-node tests/e2e/mobile-e2e.mjs    # 需服务已在 7788 运行
+node tests/e2e/mobile-e2e.mjs    # 7 种设备视口 + 抽屉 + 触摸目标 + 手机写作，17 项
 ```
 
 **涉及保存逻辑的改动，必须确认端到端测试里的「刷新后内容恢复」用例通过。**
 那是这个产品的底线用例。
+
+端到端测试需要一个 Chromium。`npm install` 不会自动下载浏览器，首次运行前执行：
+
+```bash
+npx playwright install chromium
+```
+
+脚本本身会按「环境变量 `E2E_CHROME` → 系统 Chrome → Playwright 缓存」的顺序找浏览器，
+所以装了 Chrome 的机器通常不需要额外下载。
 
 ---
 
@@ -96,6 +106,9 @@ node tests/e2e/mobile-e2e.mjs    # 需服务已在 7788 运行
 3. 附上你跑过的验证命令与结果
 4. 涉及界面的改动附截图
 5. 新功能请同步更新 README 的功能列表与「已知限制」
+
+CI（`.github/workflows/ci.yml`）会在 Node 22 / 24 上跑 `typecheck`、`test`、`build`、`selfcheck`，
+并单独跑一个真实浏览器的端到端 job。PR 上就能看到结果，不用等维护者本地复现。
 
 ## 报 Bug
 
