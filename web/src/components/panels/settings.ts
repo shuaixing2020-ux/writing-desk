@@ -90,6 +90,7 @@ export const panel: PanelDef = {
       body.appendChild(renderWritingSection(state));
       body.appendChild(renderTypesetSection(state));
       body.appendChild(renderBackupSection());
+      body.appendChild(renderAiSection());
       body.appendChild(renderIoSection());
       body.appendChild(renderMaintenanceSection(state));
       body.appendChild(renderAbout(state));
@@ -399,6 +400,244 @@ export const panel: PanelDef = {
     }
 
     // ── 导入导出 ──
+    // ── AI 接入（预留，默认关闭） ──
+    //
+    // 这一块默认是「说明 + 全部禁用」的形态：告诉用户接口已留好，
+    // 但当前版本不会发任何请求。等将来真的接入适配器，这里会自动变成可用。
+    function renderAiSection(): HTMLElement {
+      const sec = document.createElement('div');
+      sec.appendChild(
+        sectionTitle('AI 接入', { hint: '接口已预留，默认关闭；当前版本不会发起任何网络请求' }),
+      );
+
+      const wrap = h('div', { class: 'p-ai' }, loadingBlock('读取 AI 配置…'));
+      sec.appendChild(wrap);
+
+      void (async () => {
+        try {
+          const { config, status } = await ctx.api.getAi();
+          wrap.textContent = '';
+          wrap.appendChild(renderAiBody(config, status));
+        } catch (err) {
+          wrap.textContent = '';
+          wrap.appendChild(
+            h(
+              'div',
+              { class: 'p-error compact' },
+              h('div', { class: 'p-error-msg' }, errText(err)),
+              h(
+                'button',
+                {
+                  class: 'btn sm',
+                  type: 'button',
+                  onclick: () => {
+                    const parent = wrap.parentElement;
+                    if (!parent) return;
+                    const fresh = renderAiSection();
+                    parent.replaceChild(fresh, sec);
+                  },
+                },
+                '重试',
+              ),
+            ),
+          );
+        }
+      })();
+
+      return sec;
+    }
+
+    function renderAiBody(
+      config: import('../../../../shared/types.ts').AiConfig,
+      status: import('../../../../shared/types.ts').AiStatus,
+    ): HTMLElement {
+      const box = document.createElement('div');
+
+      // 状态横幅
+      const banner = h(
+        'div',
+        { class: `p-ai-banner ${status.available ? 'ok' : 'info'}` },
+        h('div', { class: 'p-ai-banner-title' }, status.available ? 'AI 已接入' : 'AI 尚未接入'),
+        h(
+          'div',
+          { class: 'p-ai-banner-text' },
+          status.available
+            ? '已安装适配器。调用前请确认下面的服务商与 Key 配置正确。'
+            : '当前版本只预留了接口与配置位。开启下面的开关也只是记录配置，不会发起任何网络请求。',
+        ),
+      );
+      box.appendChild(banner);
+
+      const save = (patch: Partial<import('../../../../shared/types.ts').AiConfig>): void => {
+        void (async () => {
+          try {
+            const res = await ctx.api.saveAi(patch);
+            // 用返回值重绘，保证界面与磁盘一致（Key 是打码值）
+            wrapReplace(res.config, res.status);
+            ctx.toast('AI 配置已保存（仅存于本机）', 'ok');
+          } catch (err) {
+            ctx.toast(`保存失败：${err instanceof Error ? err.message : String(err)}`, 'error');
+          }
+        })();
+      };
+
+      // 用一个可变容器方便局部重绘
+      const dyn = h('div', { class: 'p-ai-dyn' });
+      const wrapReplace = (
+        c: import('../../../../shared/types.ts').AiConfig,
+        st: import('../../../../shared/types.ts').AiStatus,
+      ): void => {
+        dyn.textContent = '';
+        dyn.appendChild(renderAiControls(c, st, save));
+      };
+      box.appendChild(dyn);
+      wrapReplace(config, status);
+
+      // 红线条目
+      box.appendChild(
+        h(
+          'div',
+          { class: 'p-ai-notes' },
+          h('div', { class: 'p-ai-note' }, '· API Key 只保存在本机 project.json，界面上永远打码显示'),
+          h('div', { class: 'p-ai-note' }, '· 即便将来接入，AI 产出也只作建议，不会自动改写你的正文'),
+          h('div', { class: 'p-ai-note' }, '· 本工具没有遥测、没有崩溃上报，Key 不会被带出去'),
+        ),
+      );
+
+      return box;
+    }
+
+    function renderAiControls(
+      config: import('../../../../shared/types.ts').AiConfig,
+      status: import('../../../../shared/types.ts').AiStatus,
+      save: (patch: Partial<import('../../../../shared/types.ts').AiConfig>) => void,
+    ): HTMLElement {
+      const box = document.createElement('div');
+
+      // 总开关
+      box.appendChild(
+        settingRow(
+          '启用 AI',
+          toggle(config.enabled, (v) => save({ enabled: v })),
+          { hint: status.available ? '' : '当前版本未接入适配器，开启也不会有请求发生' },
+        ),
+      );
+
+      // 服务商
+      const providerSel = h('select', { class: 'select p-ai-select' }) as HTMLSelectElement;
+      const providers: Array<[string, string]> = [
+        ['deepseek', 'DeepSeek'],
+        ['moonshot', 'Moonshot（月之暗面）'],
+        ['openai-compatible', '自定义（OpenAI 兼容）'],
+      ];
+      for (const [value, label] of providers) {
+        const opt = document.createElement('option');
+        opt.value = value;
+        opt.textContent = label;
+        if (value === config.provider) opt.selected = true;
+        providerSel.appendChild(opt);
+      }
+      providerSel.addEventListener('change', () =>
+        save({ provider: providerSel.value as import('../../../../shared/types.ts').AiProvider }),
+      );
+      box.appendChild(settingRow('服务商', providerSel));
+
+      // Base URL
+      const baseInput = textInput(config.base_url, '留空使用服务商默认地址', (v) =>
+        save({ base_url: v }),
+      );
+      box.appendChild(settingRow('接口地址', baseInput, { hint: '自定义服务商时填写' }));
+
+      // 模型
+      const modelInput = textInput(config.model, '留空使用服务商默认模型', (v) => save({ model: v }));
+      box.appendChild(settingRow('模型', modelInput));
+
+      // API Key
+      const keyInput = textInput(
+        config.api_key,
+        config.api_key ? '已保存（打码显示）' : '粘贴你的 API Key',
+        (v) => save({ api_key: v }),
+      );
+      keyInput.type = 'password';
+      keyInput.autocomplete = 'off';
+      keyInput.spellcheck = false;
+      // 聚焦时把打码值清掉，方便直接粘贴新 Key
+      keyInput.addEventListener('focus', () => {
+        if (keyInput.value.startsWith('****')) keyInput.value = '';
+      });
+      box.appendChild(
+        settingRow('API Key', keyInput, { hint: '只存本机，界面打码显示' }),
+      );
+
+      // 生成参数
+      box.appendChild(
+        settingRow(
+          '温度',
+          slider({
+            min: 0,
+            max: 2,
+            step: 0.1,
+            value: config.temperature,
+            format: (v) => v.toFixed(1),
+            onChange: (v) => save({ temperature: v }),
+          }),
+          { hint: '越高越发散，写作建议 0.7–1.0' },
+        ),
+      );
+
+      // 能力开关
+      const featBox = h('div', { class: 'p-ai-feats' });
+      const features: Array<[string, string, string]> = [
+        ['continue', '续写', '基于当前场景上下文接续若干段'],
+        ['polish', '润色选中段落', '只改表达，不改情节'],
+        ['naming', '取名建议', '生成人物、地名候选'],
+        ['consistency', '一致性提示', '提示角色行为是否与设定矛盾'],
+      ];
+      for (const [key, label, hint] of features) {
+        const on = Boolean((config.features as unknown as Record<string, boolean>)[key]);
+        featBox.appendChild(
+          h(
+            'div',
+            { class: 'p-ai-feat' },
+            h('div', { class: 'p-ai-feat-label' }, label, h('span', { class: 'p-ai-feat-hint' }, hint)),
+            toggle(on, (v) => save({ features: { [key]: v } as never })),
+          ),
+        );
+      }
+      box.appendChild(h('div', { class: 'p-ai-feat-title' }, '能力开关'));
+      box.appendChild(featBox);
+
+      // 缺失项提示
+      if (status.missing.length > 0) {
+        const miss = h('div', { class: 'p-ai-missing' }, h('div', { class: 'p-ai-missing-title' }, '还差这些才能用：'));
+        for (const m of status.missing) miss.appendChild(h('div', { class: 'p-ai-missing-item' }, `· ${m}`));
+        box.appendChild(miss);
+      }
+
+      return box;
+    }
+
+    /** 小工具：文本输入，失焦保存 */
+    function textInput(
+      value: string,
+      placeholder: string,
+      onCommit: (v: string) => void,
+    ): HTMLInputElement {
+      const input = h('input', {
+        class: 'input p-ai-input',
+        type: 'text',
+        value,
+        placeholder,
+      }) as HTMLInputElement;
+      input.addEventListener('blur', () => {
+        if (input.value !== value) onCommit(input.value.trim());
+      });
+      input.addEventListener('keydown', (ev) => {
+        if ((ev as KeyboardEvent).key === 'Enter') input.blur();
+      });
+      return input;
+    }
+
     function renderIoSection(): HTMLElement {
       const sec = h('section', { class: 'p-set-section' });
       sec.appendChild(sectionTitle('导入 / 导出'));

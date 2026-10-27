@@ -13,7 +13,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import type { ProjectContext, AppContext } from './context.ts';
 import type { ProjectMeta, ProjectSummary, TypesetPreset } from '../shared/types.ts';
-import { DEFAULT_TYPESET } from '../shared/types.ts';
+import { DEFAULT_AI_CONFIG, DEFAULT_TYPESET } from '../shared/types.ts';
 import { readJsonSafe } from './util/atomic.ts';
 import { JobQueue } from './util/job-queue.ts';
 import { ProjectStore } from './store/project.ts';
@@ -261,6 +261,11 @@ export function normalizeMeta(raw: Partial<ProjectMeta>, id: string): ProjectMet
     typeset,
     lan: { enabled: false, ...(raw.lan ?? {}) },
     auto_punct: raw.auto_punct ?? false,
+    ai: {
+      ...DEFAULT_AI_CONFIG,
+      ...(raw.ai ?? {}),
+      features: { ...DEFAULT_AI_CONFIG.features, ...(raw.ai?.features ?? {}) },
+    },
   };
 }
 

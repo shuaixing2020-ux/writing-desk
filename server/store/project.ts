@@ -26,7 +26,7 @@ import type {
   SceneContent,
   TypesetPreset,
 } from '../../shared/types.ts';
-import { DEFAULT_TYPESET } from '../../shared/types.ts';
+import { DEFAULT_AI_CONFIG, DEFAULT_TYPESET } from '../../shared/types.ts';
 import { ensureDir, exists, readJsonSafe, readTextSafe, rmSafe, writeFileAtomic, writeJsonAtomic } from '../util/atomic.ts';
 import { fmArray, fmNumber, fmString, parseFrontmatter, stringifyScene, type Frontmatter } from '../util/frontmatter.ts';
 import { pad, safeName, ulid } from '../util/id.ts';
@@ -167,6 +167,7 @@ export class ProjectStore {
       typeset: { ...DEFAULT_TYPESET },
       lan: { enabled: false },
       auto_punct: false,
+      ai: structuredClone(DEFAULT_AI_CONFIG),
     };
     await writeJsonAtomic(paths.projectFile, meta);
     return new ProjectStore(root);
@@ -187,6 +188,7 @@ export class ProjectStore {
       typeset: { ...DEFAULT_TYPESET },
       lan: { enabled: false },
       auto_punct: false,
+      ai: structuredClone(DEFAULT_AI_CONFIG),
     };
     const raw = await readJsonSafe<Partial<ProjectMeta>>(this.paths.projectFile, {});
 
@@ -210,6 +212,12 @@ export class ProjectStore {
       ...raw,
       typeset: { ...DEFAULT_TYPESET, ...(raw.typeset ?? {}) },
       lan: { ...fallback.lan, ...(raw.lan ?? {}) },
+      // ai 必须深合并：老作品没有 ai 字段，features 也要补默认值（全关）
+      ai: {
+        ...DEFAULT_AI_CONFIG,
+        ...(raw.ai ?? {}),
+        features: { ...DEFAULT_AI_CONFIG.features, ...(raw.ai?.features ?? {}) },
+      },
       schema_version: SCHEMA_VERSION,
     };
     this.metaCache = meta;

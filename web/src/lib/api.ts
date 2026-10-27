@@ -6,6 +6,9 @@
  */
 
 import type {
+  AiConfig,
+  AiResponse,
+  AiStatus,
   BackupTarget,
   DailyStat,
   DocNode,
@@ -246,6 +249,15 @@ export const api = {
   // ─────────── 导出设置 ───────────
   saveTypeset: (typeset: TypesetPreset) =>
     patch<ProjectMeta>(`${projectPrefix()}/meta`, { typeset }),
+
+  // ─────────── AI 接入（预留，默认关闭） ───────────
+  getAi: () => get<{ config: AiConfig; status: AiStatus }>(`${projectPrefix()}/ai`),
+
+  saveAi: (patchBody: Partial<AiConfig>) =>
+    patch<{ config: AiConfig; status: AiStatus }>(`${projectPrefix()}/ai`, patchBody),
+
+  aiGenerate: (req: { feature: string; prompt: string; context?: string; style?: string }) =>
+    post<AiResponse>(`${projectPrefix()}/ai/generate`, req),
 };
 
 /** WebSocket 事件订阅（作业进度、树变更） */

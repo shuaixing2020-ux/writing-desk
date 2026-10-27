@@ -87,6 +87,137 @@ export interface ProjectMeta {
   lan: { enabled: boolean };
   /** 是否允许「全半角标点自动规整」 */
   auto_punct: boolean;
+  /**
+   * AI 接入配置（架构第 0 节「AI 先不接，只预留接口」）。
+   *
+   * 设计红线：
+   *   - enabled 默认 false，用户必须显式开启
+   *   - api_key 只存本机 project.json，永不上传（本工具本就无出站请求）
+   *   - 未开启时，任何 ai 相关接口都直接返回「未启用」，不会发起网络连接
+   */
+  ai: AiConfig;
+}
+
+/** 支持的服务商。预留扩展位，新增时只需加枚举值 + 默认 base URL */
+export type AiProvider = 'deepseek' | 'moonshot' | 'openai-compatible';
+
+export const AI_PROVIDER_LABELS: Record<AiProvider, string> = {
+  deepseek: 'DeepSeek',
+  moonshot: 'Moonshot（月之暗面）',
+  'openai-compatible': '自定义（OpenAI 兼容接口）',
+};
+
+/** 各服务商默认 base URL（仅用于填充表单，不发起请求） */
+export const AI_PROVIDER_DEFAULT_BASE: Record<AiProvider, string> = {
+  deepseek: 'https://api.deepseek.com/v1',
+  moonshot: 'https://api.moonshot.cn/v1',
+  'openai-compatible': '',
+};
+
+export interface AiConfig {
+  /** 总开关，默认 false */
+  enabled: boolean;
+  provider: AiProvider;
+  /** 接口地址，空则用服务商默认值 */
+  base_url: string;
+  /** 模型名，空则用服务商默认值 */
+  model: string;
+  /** API Key。只存本机，接口返回时打码 */
+  api_key: string;
+  /** 生成参数 */
+  temperature: number;
+  max_tokens: number;
+  /** 允许的能力，逐个显式开启（默认全关） */
+  features: AiFeatureToggles;
+}
+
+/** 可用的 AI 能力，每一项都可以单独开关 */
+export interface AiFeatureToggles {
+  /** 续写：基于上下文接续若干段 */
+  continue: boolean;
+  /** 润色选中的段落 */
+  polish: boolean;
+  /** 生成人物/地名候选名 */
+  naming: boolean;
+  /** 检查角色行为是否合逻辑（需人工确认，不做自动修改） */
+  consistency: boolean;
+}
+
+export const AI_FEATURE_LABELS: Record<keyof AiFeatureToggles, string> = {
+  continue: '续写',
+  polish: '润色选中段落',
+  naming: '取名建议',
+  consistency: '情节与角色一致性提示',
+};
+
+export const DEFAULT_AI_CONFIG: AiConfig = {
+  enabled: false,
+  provider: 'deepseek',
+  base_url: '',
+  model: '',
+  api_key: '',
+  temperature: 0.8,
+  max_tokens: 800,
+  features: {
+    continue: false,
+    polish: false,
+    naming: false,
+    consistency: false,
+  },
+};
+
+// ─────────────────────────── AI 接口（预置，未启用时不可用） ───────────────────────────
+
+/**
+ * AI 能力的统一请求。
+ *
+ * 即便将来真的接入，也必须满足：
+ *   1. 结果只作建议展示，落盘前必须由作者确认
+ *   2. 不自动改写正文
+ *   3. 请求内容在界面上可见（可预览将要发送的上下文）
+ */
+export interface AiRequest {
+  feature: keyof AiFeatureToggles;
+  /** 用户指令或上下文 */
+  prompt: string;
+  /** 前置上下文（如当前场景正文片段） */
+  context?: string;
+  /** 期望风格，可选 */
+  style?: string;
+}
+
+export interface AiResponse {
+  text: string;
+  provider: AiProvider;
+  model: string;
+  /** 消耗的 token（若服务商返回） */
+  usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
+  /** 耗时毫秒 */
+  took_ms: number;
+}
+
+/** AI 状态：前端据此决定显示「未启用」还是可用 */
+export interface AiStatus {
+  /** 插件式接入层是否已就绪（当前版本恒为 false = 未接入） */
+  available: boolean;
+  /** 用户是否已开启 */
+  enabled: boolean;
+  /** 缺少什么才能用 */
+  missing: string[];
+  /** 已启用的能力 */
+  features: Array<keyof AiFeatureToggles>;
+}
+
+/**
+ * AI 后端适配器接口 —— 预留给将来的实现。
+ *
+ * 当前没有任何实现类被实例化（agent 适配器默认不加载），
+ * 所以系统不会发起任何出站网络请求。
+ */
+export interface AiAdapter {
+  readonly provider: AiProvider;
+  /** 生成文本。实现方负责超时、重试与错误信息中文化 */
+  generate(req: AiRequest, config: AiConfig): Promise<AiResponse>;
 }
 
 export interface TypesetPreset {

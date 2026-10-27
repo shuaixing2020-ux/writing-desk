@@ -555,6 +555,55 @@ async function main() {
       throw new Error('备份超时');
     });
 
+    await check('AI 接口默认关闭且拒绝调用（零出站请求）', async () => {
+      const res = await fetch(`${BASE}/api/projects/${projectId}/ai`);
+      assert(res.status === 200, `HTTP ${res.status}`);
+      const { config, status } = await res.json();
+      assert(config.enabled === false, 'AI 默认必须是关闭的');
+      assert(status.available === false, '当前版本不应报告 AI 可用');
+      assert(Array.isArray(status.missing) && status.missing.length > 0, '应说明缺失项');
+
+      // 即便强行调用，也必须被拦在网络请求之前
+      const call = await fetch(`${BASE}/api/projects/${projectId}/ai/generate`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ feature: 'continue', prompt: '测试' }),
+      });
+      assert(call.status === 503, `应返回 503，实际 ${call.status}`);
+      const err = await call.json();
+      assert(typeof err.code === 'string' && err.code.startsWith('ai_'), '应返回 AI 错误码');
+      return '默认关闭，调用被拦截';
+    });
+
+    await check('AI Key 打码且不被回传覆盖', async () => {
+      const secret = 'sk-selfcheck-secret-1234';
+      const save = await fetch(`${BASE}/api/projects/${projectId}/ai`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ api_key: secret }),
+      });
+      const saved = await save.json();
+      assert(saved.config.api_key === '****1234', `返回的 Key 应打码，实际 ${saved.config.api_key}`);
+      assert(!JSON.stringify(saved).includes(secret), '响应体不应包含完整 Key');
+
+      // 模拟前端把打码值原样回传：磁盘上的真 Key 不能被覆盖
+      await fetch(`${BASE}/api/projects/${projectId}/ai`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ api_key: '****1234' }),
+      });
+      const after = await (await fetch(`${BASE}/api/projects/${projectId}/ai`)).json();
+      assert(after.config.api_key === '****1234', '打码值被当成了真 Key 写入');
+
+      // 清理：显式清空
+      await fetch(`${BASE}/api/projects/${projectId}/ai`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ api_key: '' }),
+      });
+      return '打码正确，回传不覆盖';
+    });
+
     await check('灵感箱', async () => {
       const res = await fetch(`${BASE}/api/projects/${projectId}/inbox`, {
         method: 'POST',

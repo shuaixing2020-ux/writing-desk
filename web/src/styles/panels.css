@@ -1749,3 +1749,123 @@
     align-items: flex-start;
   }
 }
+
+/* ══════════════════════════════════════════════════════════════════
+   AI 接入（设置页）
+   刻意做得「安静」：这是一块预留位，不该比写作相关设置更抢眼。
+   ══════════════════════════════════════════════════════════════════ */
+
+.p-ai {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.p-ai-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: var(--sp-3);
+  border-radius: var(--r-md);
+  border: 1px solid var(--paper-4);
+  background: var(--paper-2);
+}
+.p-ai-banner.info {
+  background: var(--info-soft);
+  border-color: transparent;
+}
+.p-ai-banner.ok {
+  background: var(--ok-soft);
+  border-color: transparent;
+}
+.p-ai-banner-title {
+  font-size: var(--fs-md);
+  font-weight: 600;
+  color: var(--ink-1);
+}
+.p-ai-banner-text {
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+  color: var(--ink-3);
+}
+
+.p-ai-dyn {
+  display: flex;
+  flex-direction: column;
+}
+
+.p-ai-select,
+.p-ai-input {
+  min-width: 180px;
+  max-width: 260px;
+}
+
+.p-ai-feat-title {
+  margin-top: var(--sp-3);
+  margin-bottom: var(--sp-2);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--ink-3);
+}
+
+.p-ai-feats {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.p-ai-feat {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  padding: var(--sp-2) 0;
+  border-bottom: 1px solid var(--paper-3);
+  min-height: 44px;
+}
+.p-ai-feat:last-child {
+  border-bottom: none;
+}
+.p-ai-feat-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: var(--fs-md);
+  color: var(--ink-1);
+}
+.p-ai-feat-hint {
+  font-size: var(--fs-xs);
+  color: var(--ink-4);
+}
+
+.p-ai-missing {
+  margin-top: var(--sp-3);
+  padding: var(--sp-3);
+  border-radius: var(--r-md);
+  background: var(--warn-soft);
+}
+.p-ai-missing-title {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--warn);
+  margin-bottom: 4px;
+}
+.p-ai-missing-item {
+  font-size: var(--fs-sm);
+  line-height: 1.7;
+  color: var(--ink-2);
+}
+
+.p-ai-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: var(--sp-2) 0;
+  border-top: 1px dashed var(--paper-4);
+  margin-top: var(--sp-2);
+}
+.p-ai-note {
+  font-size: var(--fs-xs);
+  line-height: 1.6;
+  color: var(--ink-4);
+}
