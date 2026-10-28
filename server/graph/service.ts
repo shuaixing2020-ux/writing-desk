@@ -350,8 +350,27 @@ export class GraphService {
     const entities = await this.ctx.store.listEntities();
     const target = entities.find((e) => e.id === input.to);
 
+    // 撤销删除时允许按原 id 恢复；其余场景由服务端生成。
+    // 显式 id 必须校验格式与唯一性，否则会覆盖已有关系。
+    let relId = newRelationId();
+    if (input.id) {
+      if (!/^r_[0-9A-Za-z]{1,40}$/.test(input.id)) {
+        throw new RelationError('rel_bad_id', `关系 id 格式不合法：${input.id}`);
+      }
+      if (this.ctx.index.getRelation(input.id)) {
+        throw new RelationError('rel_duplicate', `关系 id 已存在：${input.id}`, 409);
+      }
+      const sameId = this.ctx.index
+        .allRelations()
+        .some((r) => r.id === input.id);
+      if (sameId) {
+        throw new RelationError('rel_duplicate', `关系 id 已存在：${input.id}`, 409);
+      }
+      relId = input.id;
+    }
+
     const rel: Relation = {
-      id: newRelationId(),
+      id: relId,
       type: def.key,
       from: fromId,
       to: input.to,

@@ -2048,3 +2048,29 @@
   border-bottom: 1px dashed var(--paper-4);
   margin-bottom: 2px;
 }
+
+/* 关系分组标题行：标签 + 撤销/重做 */
+.p-rel-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-height: 22px;
+}
+.p-rel-head .p-field-label {
+  margin-bottom: 0;
+}
+.p-rel-history-btn {
+  font-size: var(--fs-xs);
+  color: var(--ink-4);
+  padding: 1px 6px;
+  border-radius: var(--r-sm);
+  transition: color var(--dur-1) var(--ease), background var(--dur-1) var(--ease);
+}
+.p-rel-history-btn:hover:not(:disabled) {
+  color: var(--accent-ink);
+  background: var(--accent-soft);
+}
+.p-rel-history-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}

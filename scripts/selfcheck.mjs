@@ -780,6 +780,56 @@ async function main() {
       return `指向已改为「${c.name}」`;
     });
 
+    await check('关系：按原 id 恢复（撤销删除的服务端能力）', async () => {
+      const list = await (await fetch(`${BASE}/api/projects/${projectId}/entities`)).json();
+      const a = list.find((e) => e.name === '反转甲');
+      const b = list.find((e) => e.name === '反转乙');
+      assert(a && b, '缺少测试条目');
+
+      // 建一条关系
+      const created = await (
+        await fetch(`${BASE}/api/projects/${projectId}/entities/${a.id}/relations`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ type: 'kin', to: b.id, note: '待撤销' }),
+        })
+      ).json();
+      assert(created.id, '未返回关系 id');
+
+      // 删除
+      const del = await fetch(`${BASE}/api/projects/${projectId}/relations/${created.id}`, {
+        method: 'DELETE',
+      });
+      assert(del.status === 200, `删除失败 HTTP ${del.status}`);
+
+      // 按原 id 恢复（撤销删除走的就是这条路径）
+      const restored = await fetch(`${BASE}/api/projects/${projectId}/entities/${a.id}/relations`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          id: created.id,
+          type: created.type,
+          to: created.to,
+          note: created.note,
+        }),
+      });
+      assert(restored.status === 200, `按原 id 恢复失败 HTTP ${restored.status}`);
+      const back = await restored.json();
+      assert(back.id === created.id, `id 未保持：${back.id} !== ${created.id}`);
+
+      // 重复 id 必须被拒绝，否则撤销会覆盖别人的关系
+      const dup = await fetch(`${BASE}/api/projects/${projectId}/entities/${a.id}/relations`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id: created.id, type: 'kin', to: b.id }),
+      });
+      assert(dup.status === 409, `重复 id 应返回 409，实际 ${dup.status}`);
+
+      // 收尾：删掉，避免影响后续检查
+      await fetch(`${BASE}/api/projects/${projectId}/relations/${created.id}`, { method: 'DELETE' });
+      return 'id 保持且重复被拒';
+    });
+
     await check('事务日志目录无残留（崩溃恢复前置条件）', async () => {
       const journalDir = path.join(dataDir, projectId, '.studio', 'journal');
       const exists = await fs.stat(journalDir).then(() => true).catch(() => false);

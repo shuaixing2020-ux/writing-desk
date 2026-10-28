@@ -693,6 +693,11 @@ export interface RelationTypeDef {
 
 /** 新增关系的入参 */
 export interface RelationInput {
+  /**
+   * 关系 id。仅用于「撤销删除」时按原 id 恢复 ——
+   * 其他场景应留空，由服务端生成（r_ + ulid）。
+   */
+  id?: string;
   /** 类型键或中文显示名 */
   type: string;
   /** 目标条目 id */

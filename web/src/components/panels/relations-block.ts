@@ -16,10 +16,12 @@ import type {
   Entity,
   EntityType,
   Relation,
+  RelationPatch,
   RelationTypeDef,
 } from '../../../../shared/types.ts';
 import { ENTITY_TYPE_LABELS } from '../../../../shared/types.ts';
 import { h } from '../../lib/dom.ts';
+import { historyFor } from '../graph/history.ts';
 import { confirmDanger, errText, toast } from './shared.ts';
 
 export interface RelationSectionOptions {
@@ -43,7 +45,88 @@ export interface RelationSectionOptions {
 export function renderRelationSection(opts: RelationSectionOptions): HTMLElement {
   const { ctx, entity } = opts;
   const box = h('div', { class: 'p-field p-rel' });
-  box.appendChild(h('div', { class: 'p-field-label' }, '关系'));
+
+  const projectId = ctx.store.state.projectId ?? '';
+  const history = historyFor(projectId);
+
+  /** 撤销/重做后统一刷新：先重载关系，再通知外层重载详情 */
+  const refreshAfterHistory = async (): Promise<void> => {
+    await load();
+    opts.onChanged();
+  };
+
+  /**
+   * 按快照重建一条关系（撤销删除用）。
+   * 必须带原 id：否则撤销后关系 id 变了，外部引用（快照、导出的笔记）会失效。
+   */
+  const restoreRelation = async (snap: Relation): Promise<void> => {
+    await ctx.api.createRelation(snap.from, {
+      id: snap.id,
+      type: snap.type,
+      to: snap.to,
+      since: snap.since,
+      until: snap.until,
+      reveal: snap.reveal,
+      weight: snap.weight,
+      note: snap.note,
+    });
+  };
+
+  const undoBtn = h(
+    'button',
+    {
+      class: 'p-rel-history-btn',
+      type: 'button',
+      title: '撤销上一步关系操作',
+      onclick: () => void runHistory('undo'),
+    },
+    '撤销',
+  ) as HTMLButtonElement;
+
+  const redoBtn = h(
+    'button',
+    {
+      class: 'p-rel-history-btn',
+      type: 'button',
+      title: '重做',
+      onclick: () => void runHistory('redo'),
+    },
+    '重做',
+  ) as HTMLButtonElement;
+
+  const runHistory = async (kind: 'undo' | 'redo'): Promise<void> => {
+    try {
+      const label = kind === 'undo' ? await history.undo() : await history.redo();
+      if (!label) {
+        toast(ctx, kind === 'undo' ? '没有可撤销的操作' : '没有可重做的操作', 'info');
+        return;
+      }
+      toast(ctx, `${kind === 'undo' ? '已撤销' : '已重做'}：${label}`, 'ok');
+      await refreshAfterHistory();
+    } catch (err) {
+      toast(ctx, `${kind === 'undo' ? '撤销' : '重做'}失败：${errText(err)}`, 'error');
+      // 失败时也刷新一次，保证界面与磁盘一致
+      await refreshAfterHistory().catch(() => {});
+    }
+  };
+
+  /** 撤销/重做按钮的可用态跟随历史栈 */
+  const syncHistoryButtons = (): void => {
+    undoBtn.disabled = !history.canUndo;
+    redoBtn.disabled = !history.canRedo;
+    undoBtn.title = history.canUndo ? `撤销：${history.undoLabel}` : '没有可撤销的操作';
+    redoBtn.title = history.canRedo ? `重做：${history.redoLabel}` : '没有可重做的操作';
+  };
+
+  const headRow = h(
+    'div',
+    { class: 'p-rel-head' },
+    h('div', { class: 'p-field-label' }, '关系'),
+    h('span', { class: 'grow' }),
+    undoBtn,
+    redoBtn,
+  );
+  box.appendChild(headRow);
 
   const host = h('div', { class: 'p-rel-body' }, h('div', { class: 'p-loading' }, h('span', { class: 'spinner' }), h('span', null, '读取关系…')));
   box.appendChild(host);
@@ -165,6 +248,8 @@ export function renderRelationSection(opts: RelationSectionOptions): HTMLElement
       for (const rel of view.in) inGroup.appendChild(renderRow(rel, 'in'));
       host.appendChild(inGroup);
     }
+
+    syncHistoryButtons();
   }
 
   function renderRow(rel: Relation & { dangling?: boolean }, dir: 'out' | 'in'): HTMLElement {
@@ -234,11 +319,22 @@ export function renderRelationSection(opts: RelationSectionOptions): HTMLElement
                   confirmText: '移除',
                 });
                 if (!ok) return;
+                const snap: Relation = { ...rel };
                 try {
                   await ctx.api.deleteRelation(rel.id);
+                  history.push({
+                    label: `移除悬空关系「${label} → ${otherName}」`,
+                    undo: async () => {
+                      await restoreRelation(snap);
+                      await refreshAfterHistory();
+                    },
+                    redo: async () => {
+                      await ctx.api.deleteRelation(snap.id);
+                      await refreshAfterHistory();
+                    },
+                  });
                   toast(ctx, '已移除', 'ok');
-                  await load();
-                  opts.onChanged();
+                  await refreshAfterHistory();
                 } catch (err) {
                   toast(ctx, `移除失败：${errText(err)}`, 'error');
                 }
@@ -286,9 +382,20 @@ export function renderRelationSection(opts: RelationSectionOptions): HTMLElement
                   if (!ok) return;
                   try {
                     await ctx.api.reverseRelation(rel.id);
+                    history.push({
+                      label: `反转「${typeOf(rel.type)?.label ?? rel.type}」关系`,
+                      // 再反转一次就回到原方向
+                      undo: async () => {
+                        await ctx.api.reverseRelation(rel.id);
+                        await refreshAfterHistory();
+                      },
+                      redo: async () => {
+                        await ctx.api.reverseRelation(rel.id);
+                        await refreshAfterHistory();
+                      },
+                    });
                     toast(ctx, '已反转方向', 'ok');
-                    await load();
-                    opts.onChanged();
+                    await refreshAfterHistory();
                   } catch (err) {
                     toast(ctx, `反转失败：${errText(err)}`, 'error');
                   }
@@ -332,11 +439,22 @@ export function renderRelationSection(opts: RelationSectionOptions): HTMLElement
                   confirmText: '删除',
                 });
                 if (!ok) return;
+                const snap: Relation = { ...rel };
                 try {
                   await ctx.api.deleteRelation(rel.id);
+                  history.push({
+                    label: `删除「${label} → ${otherName}」`,
+                    undo: async () => {
+                      await restoreRelation(snap);
+                      await refreshAfterHistory();
+                    },
+                    redo: async () => {
+                      await ctx.api.deleteRelation(snap.id);
+                      await refreshAfterHistory();
+                    },
+                  });
                   toast(ctx, '已删除', 'ok');
-                  await load();
-                  opts.onChanged();
+                  await refreshAfterHistory();
                 } catch (err) {
                   toast(ctx, `删除失败：${errText(err)}`, 'error');
                 }
@@ -417,12 +535,25 @@ export function renderRelationSection(opts: RelationSectionOptions): HTMLElement
           return;
         }
         submit.disabled = true;
+        // 捕获当前值：闭包里的 select.value 之后可能被用户改动
+        const newTo = select.value;
+        const oldTo = rel.to;
         try {
-          await ctx.api.retargetRelation(rel.id, select.value);
+          await ctx.api.retargetRelation(rel.id, newTo);
+          history.push({
+            label: `改指向「${rel.to_name ?? oldTo}」`,
+            undo: async () => {
+              await ctx.api.retargetRelation(rel.id, oldTo);
+              await refreshAfterHistory();
+            },
+            redo: async () => {
+              await ctx.api.retargetRelation(rel.id, newTo);
+              await refreshAfterHistory();
+            },
+          });
           toast(ctx, '已改指向', 'ok');
           retargetingId = null;
-          await load();
-          opts.onChanged();
+          await refreshAfterHistory();
         } catch (err) {
           errorHost.textContent = errText(err);
           errorHost.classList.remove('hidden');
@@ -570,11 +701,30 @@ export function renderRelationSection(opts: RelationSectionOptions): HTMLElement
         submit.disabled = true;
         try {
           if (existing) {
-            await ctx.api.updateRelation(existing.id, {
+            // 撤销需要「改前的完整 patch」，undefined 表示不改，null 表示清除
+            const before: RelationPatch = {
+              type: existing.type,
+              since: existing.since ?? null,
+              until: existing.until ?? null,
+              note: existing.note,
+            };
+            const after: RelationPatch = {
               type: typeSel.value,
               since: sinceSel.value || null,
               until: untilSel.value || null,
               note: noteInput.value,
+            };
+            await ctx.api.updateRelation(existing.id, after);
+            history.push({
+              label: `修改「${typeOf(existing.type)?.label ?? existing.type}」关系`,
+              undo: async () => {
+                await ctx.api.updateRelation(existing.id, before);
+                await refreshAfterHistory();
+              },
+              redo: async () => {
+                await ctx.api.updateRelation(existing.id, after);
+                await refreshAfterHistory();
+              },
             });
             toast(ctx, '关系已更新', 'ok');
           } else {
@@ -583,12 +733,33 @@ export function renderRelationSection(opts: RelationSectionOptions): HTMLElement
               submit.disabled = false;
               return;
             }
-            await ctx.api.createRelation(entity.id, {
+            const created = await ctx.api.createRelation(entity.id, {
               type: typeSel.value,
               to: targetSel.value,
               since: sinceSel.value || undefined,
               until: untilSel.value || undefined,
               note: noteInput.value,
+            });
+            history.push({
+              label: `新增「${typeOf(created.type)?.label ?? created.type}」关系`,
+              undo: async () => {
+                await ctx.api.deleteRelation(created.id);
+                await refreshAfterHistory();
+              },
+              redo: async () => {
+                // 重做必须带原 id，否则关系 id 会变
+                await ctx.api.createRelation(entity.id, {
+                  id: created.id,
+                  type: created.type,
+                  to: created.to,
+                  since: created.since,
+                  until: created.until,
+                  reveal: created.reveal,
+                  weight: created.weight,
+                  note: created.note,
+                });
+                await refreshAfterHistory();
+              },
             });
             toast(ctx, '关系已添加', 'ok');
           }

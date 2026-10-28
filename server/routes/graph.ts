@@ -68,6 +68,7 @@ export function registerGraphRoutes(app: FastifyInstance, appCtx: AppContextImpl
     const to = requireString(body.to, 'to', { max: 120 });
 
     const input: RelationInput = { type, to };
+    if (typeof body.id === 'string' && body.id.trim()) input.id = body.id.trim();
     if (typedString(body.since)) input.since = typedString(body.since)!;
     if (typedString(body.until)) input.until = typedString(body.until)!;
     if (typedString(body.reveal)) input.reveal = typedString(body.reveal)!;
