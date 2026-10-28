@@ -17,8 +17,9 @@ import type { PanelContext } from '../../lib/contracts.ts';
 import type { Entity, Relation, RelationTypeDef } from '../../../../shared/types.ts';
 import { ENTITY_TYPE_LABELS } from '../../../../shared/types.ts';
 import { h } from '../../lib/dom.ts';
-import { errText, toast } from '../panels/shared.ts';
-import { filterByChapter, layoutGraph, type GraphLayout } from './layout.ts';
+import { confirmDanger, errText, toast } from '../panels/shared.ts';
+import { historyFor } from './history.ts';
+import { filterByChapter, layoutGraph, type GraphEdge, type GraphLayout } from './layout.ts';
 
 /** SVG 命名空间 */
 const NS = 'http://www.w3.org/2000/svg';
@@ -77,6 +78,16 @@ export class GraphView {
   private dragStart = { x: 0, y: 0, tx: 0, ty: 0 };
   private hoveredId: string | null = null;
   private destroyed = false;
+
+  // 拖拽连线（图内编辑）
+  private linkSourceId: string | null = null;
+  private linkLine: SVGLineElement | null = null;
+  private linkMoved = false;
+  private linkStart = { x: 0, y: 0 };
+  /** 拖拽超过这个像素才算「连线」，否则视为点击（打开条目） */
+  private readonly LINK_THRESHOLD = 6;
+  /** 待选类型的浮层 */
+  private linkPicker: HTMLElement | null = null;
 
   constructor(opts: GraphViewOptions) {
     this.ctx = opts.ctx;
@@ -354,6 +365,29 @@ export class GraphView {
       // 无向边只画一次（按 id 排序去重）
       if (!edge.directed && edge.from > edge.to) continue;
 
+      // 透明命中区：可见线只有 1.2px，鼠标几乎点不中。
+      // 在它下面垫一条 14px 宽的透明线专门接点击。
+      const hitArea = svgEl('line', {
+        class: 'gv-edge-hit',
+        x1: a.x,
+        y1: a.y,
+        x2: b.x,
+        y2: b.y,
+      });
+      hitArea.appendChild(svgEl('title')).textContent =
+        `${edge.type}${edge.note ? `：${edge.note}` : ''}（点击可删除）`;
+      hitArea.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        void this.deleteEdgeFromCanvas(edge);
+      });
+      hitArea.addEventListener('mouseenter', () => {
+        line.classList.add('hover');
+      });
+      hitArea.addEventListener('mouseleave', () => {
+        line.classList.remove('hover');
+      });
+      this.layerEdges.appendChild(hitArea);
+
       const line = svgEl('line', {
         class: `gv-edge${edge.dangling ? ' dangling' : ''}`,
         x1: a.x,
@@ -364,6 +398,7 @@ export class GraphView {
         'data-to': edge.to,
       });
       line.appendChild(svgEl('title')).textContent = `${edge.type}${edge.note ? `：${edge.note}` : ''}`;
+
       this.layerEdges.appendChild(line);
 
       // 有向边加箭头
@@ -415,8 +450,18 @@ export class GraphView {
 
       g.appendChild(svgEl('title')).textContent = `${node.name}（${ENTITY_TYPE_LABELS[node.type] ?? node.type}）· ${node.degree} 条关系`;
 
+      // 拖拽起点：从节点拖到另一个节点 = 建立关系
+      g.addEventListener('pointerdown', (ev: PointerEvent) => {
+        if (ev.button !== 0) return;
+        ev.stopPropagation(); // 不要触发画布平移
+        this.beginLink(node.id, ev);
+      });
+
       g.addEventListener('click', (ev) => {
         ev.stopPropagation();
+        // 拖拽结束时浏览器仍会补一个 click，这里必须忽略，
+        // 否则「拖出连线」会顺带把当前条目详情弹出来。
+        if (this.linkMoved) return;
         this.ctx.actions.jumpToEntity(node.id);
         this.onClose();
       });
@@ -488,22 +533,244 @@ export class GraphView {
 
   // ─────────────────────── 交互 ───────────────────────
 
+  // ─────────────────────── 图内编辑 ───────────────────────
+
+  /**
+   * 屏幕坐标 → SVG 用户坐标。
+   * 要考虑当前的平移与缩放，否则拖出的线会跟鼠标错位。
+   */
+  private clientToSvg(clientX: number, clientY: number): { x: number; y: number } {
+    const rect = this.svg.getBoundingClientRect();
+    return {
+      x: (clientX - rect.left - this.tx) / this.scale,
+      y: (clientY - rect.top - this.ty) / this.scale,
+    };
+  }
+
+  /** 从某个节点开始拖出连线 */
+  private beginLink(sourceId: string, ev: PointerEvent): void {
+    const src = this.layout?.nodes.find((n) => n.id === sourceId);
+    if (!src) return;
+
+    this.linkSourceId = sourceId;
+    this.linkMoved = false;
+    const pos = this.clientToSvg(ev.clientX, ev.clientY);
+    this.linkStart = pos;
+
+    const line = svgEl('line', {
+      class: 'gv-link-line',
+      x1: src.x,
+      y1: src.y,
+      x2: pos.x,
+      y2: pos.y,
+    });
+    this.linkLine = line;
+    this.layerEdges.appendChild(line);
+  }
+
+  /** 拖动中：更新临时线，并记录是否已超过阈值 */
+  private updateLink(ev: PointerEvent): void {
+    if (!this.linkLine) return;
+    const pos = this.clientToSvg(ev.clientX, ev.clientY);
+    this.linkLine.setAttribute('x2', String(pos.x));
+    this.linkLine.setAttribute('y2', String(pos.y));
+
+    const dx = (pos.x - this.linkStart.x) * this.scale;
+    const dy = (pos.y - this.linkStart.y) * this.scale;
+    if (Math.hypot(dx, dy) > this.LINK_THRESHOLD) this.linkMoved = true;
+  }
+
+  /** 松开：若落在另一个节点上则弹出类型选择 */
+  private endLink(ev: PointerEvent): void {
+    const sourceId = this.linkSourceId;
+    const moved = this.linkMoved;
+
+    this.linkLine?.remove();
+    this.linkLine = null;
+    this.linkSourceId = null;
+    // 浏览器在 pointerup 之后还会补一个 click。延迟清标记，
+    // 让那个 click 能看到「这次是拖拽」，从而不打开条目详情。
+    setTimeout(() => {
+      this.linkMoved = false;
+    }, 60);
+
+    if (!sourceId || !moved) return;
+
+    const el = document.elementFromPoint(ev.clientX, ev.clientY);
+    const nodeEl = el?.closest('.gv-node') as SVGGElement | null;
+    const targetId = nodeEl?.dataset.id;
+    if (!targetId || targetId === sourceId) return;
+
+    this.openLinkPicker(sourceId, targetId, ev.clientX, ev.clientY);
+  }
+
+  /** 弹出「选关系类型」浮层 */
+  private openLinkPicker(fromId: string, toId: string, clientX: number, clientY: number): void {
+    this.closeLinkPicker();
+
+    const from = this.entities.find((e) => e.id === fromId);
+    const to = this.entities.find((e) => e.id === toId);
+    if (!from || !to) return;
+
+    // 只列出端点类型允许的关系
+    const allowed = this.types.filter(
+      (t) => t.allowed === null || t.allowed.some(([a, b]) => a === from.type && b === to.type),
+    );
+
+    const rect = this.canvas.getBoundingClientRect();
+    const x = Math.max(8, Math.min(clientX - rect.left, rect.width - 220));
+    const y = Math.max(8, Math.min(clientY - rect.top, rect.height - 40 - allowed.length * 30));
+
+    const picker = h(
+      'div',
+      { class: 'gv-picker', style: { left: `${x}px`, top: `${y}px` } },
+      h('div', { class: 'gv-picker-title truncate' }, `${from.name} → ${to.name}`),
+    );
+
+    if (allowed.length === 0) {
+      picker.appendChild(
+        h(
+          'div',
+          { class: 'gv-picker-empty' },
+          `「${ENTITY_TYPE_LABELS[from.type] ?? from.type}」与「${ENTITY_TYPE_LABELS[to.type] ?? to.type}」之间没有可用的关系类型`,
+        ),
+      );
+    } else {
+      for (const t of allowed) {
+        picker.appendChild(
+          h(
+            'button',
+            {
+              class: 'gv-picker-btn',
+              type: 'button',
+              title: t.directed ? '有向关系' : '无向关系',
+              onclick: () => void this.createLink(fromId, toId, t.key, t.label),
+            },
+            t.label,
+          ),
+        );
+      }
+    }
+
+    picker.appendChild(
+      h(
+        'button',
+        {
+          class: 'gv-picker-cancel',
+          type: 'button',
+          onclick: () => this.closeLinkPicker(),
+        },
+        '取消',
+      ),
+    );
+
+    this.canvas.appendChild(picker);
+    this.linkPicker = picker;
+  }
+
+  private closeLinkPicker(): void {
+    this.linkPicker?.remove();
+    this.linkPicker = null;
+  }
+
+  /** 在图上创建一条关系 */
+  private async createLink(
+    fromId: string,
+    toId: string,
+    typeKey: string,
+    typeLabel: string,
+  ): Promise<void> {
+    this.closeLinkPicker();
+    const fromName = this.entities.find((e) => e.id === fromId)?.name ?? fromId;
+    const toName = this.entities.find((e) => e.id === toId)?.name ?? toId;
+
+    try {
+      const created = await this.ctx.api.createRelation(fromId, { type: typeKey, to: toId });
+      const history = historyFor(this.ctx.store.state.projectId ?? '');
+      history.push({
+        label: `新增「${typeLabel}」关系`,
+        undo: async () => {
+          await this.ctx.api.deleteRelation(created.id);
+          await this.load();
+        },
+        redo: async () => {
+          await this.ctx.api.createRelation(fromId, {
+            id: created.id,
+            type: created.type,
+            to: created.to,
+            since: created.since,
+            until: created.until,
+            reveal: created.reveal,
+            weight: created.weight,
+            note: created.note,
+          });
+          await this.load();
+        },
+      });
+      toast(this.ctx, `已建立「${fromName} ${typeLabel} ${toName}」`, 'ok');
+      await this.load();
+    } catch (err) {
+      toast(this.ctx, `创建失败：${errText(err)}`, 'error');
+    }
+  }
+
+  /** 点击边 → 删除这条关系 */
+  private async deleteEdgeFromCanvas(edge: GraphEdge): Promise<void> {
+    const def = this.types.find((t) => t.key === edge.type);
+    const label = def?.label ?? edge.type;
+    const fromName = this.entities.find((e) => e.id === edge.from)?.name ?? edge.from;
+    const toName = this.entities.find((e) => e.id === edge.to)?.name ?? edge.to;
+
+    const ok = await confirmDanger(this.ctx, {
+      title: '删除关系',
+      message: `删除「${fromName} ${label} ${toName}」这条关系？${edge.note ? `\n\n备注：${edge.note}` : ''}`,
+      confirmText: '删除',
+    });
+    if (!ok) return;
+
+    try {
+      await this.ctx.api.deleteRelation(edge.id);
+      toast(this.ctx, '关系已删除', 'ok');
+      await this.load();
+    } catch (err) {
+      toast(this.ctx, `删除失败：${errText(err)}`, 'error');
+    }
+  }
+
   private bindInteractions(): void {
     // 拖动平移
     this.svg.addEventListener('pointerdown', (ev) => {
+      // 点空白先关掉类型浮层
+      if (this.linkPicker) {
+        this.closeLinkPicker();
+      }
       if ((ev.target as Element).closest('.gv-node')) return;
+
+      // 边的命中区不能触发画布拖拽：一旦 setPointerCapture，
+      // 后续的 click 会被重定向到 SVG，边就收不到点击了（实测点了没反应）。
+      if ((ev.target as Element).closest('.gv-edge-hit')) return;
       this.dragging = true;
       this.dragStart = { x: ev.clientX, y: ev.clientY, tx: this.tx, ty: this.ty };
       this.svg.setPointerCapture(ev.pointerId);
       this.svg.classList.add('dragging');
     });
     this.svg.addEventListener('pointermove', (ev) => {
+      // 拖拽连线优先于画布平移
+      if (this.linkLine) {
+        this.updateLink(ev);
+        return;
+      }
       if (!this.dragging) return;
       this.tx = this.dragStart.tx + (ev.clientX - this.dragStart.x);
       this.ty = this.dragStart.ty + (ev.clientY - this.dragStart.y);
       this.applyTransform();
     });
-    const endDrag = (): void => {
+    const endDrag = (ev: PointerEvent): void => {
+      // 结束连线（若有）
+      if (this.linkLine || this.linkSourceId) {
+        this.endLink(ev);
+        return;
+      }
       this.dragging = false;
       this.svg.classList.remove('dragging');
     };
@@ -564,6 +831,7 @@ export class GraphView {
 
   destroy(): void {
     this.destroyed = true;
+    this.closeLinkPicker();
     this._removeKey?.();
     this._removeResize?.();
     this.root.remove();

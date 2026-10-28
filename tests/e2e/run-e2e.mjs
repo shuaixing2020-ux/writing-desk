@@ -411,6 +411,29 @@ async function main() {
       assert(!opts.includes('导致'), `角色不应能选「导致」，实际：${opts.join(', ')}`);
     });
 
+    await check('关系图谱可打开并渲染节点', async () => {
+      // 用命令面板打开图谱
+      await page.keyboard.press('ControlOrMeta+k');
+      await page.waitForTimeout(700);
+      await page.keyboard.type('关系图谱', { delay: 20 });
+      await page.waitForTimeout(600);
+      await page.keyboard.press('Enter');
+      await page.waitForTimeout(2500);
+
+      const graph = await page.evaluate(() => ({
+        open: !!document.querySelector('.gv-root'),
+        nodes: document.querySelectorAll('.gv-node').length,
+        status: document.querySelector('.gv-status')?.textContent ?? '',
+      }));
+      assert(graph.open, '图谱视图未打开');
+      // 这个测试项目里建过条目，应该至少渲染出一个节点
+      assert(graph.nodes > 0, `图谱未渲染节点（${graph.status}）`);
+
+      // 关掉图谱，避免影响后续检查
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(800);
+    });
+
     await check('无未捕获的运行时错误', async () => {
       // 过滤掉网络类噪音（服务端某些路由可能还在开发）
       const real = consoleErrors.filter(
