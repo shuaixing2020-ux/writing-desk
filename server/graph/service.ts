@@ -33,6 +33,8 @@ import type {
   RelationTypeDef,
 } from '../../shared/types.ts';
 import { ENTITY_TYPE_LABELS } from '../../shared/types.ts';
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
 import type { ProjectContext } from '../context.ts';
 import { readTextSafe, writeFileAtomic } from '../util/atomic.ts';
 import { parseFrontmatter, stringifyScene, type Frontmatter } from '../util/frontmatter.ts';
@@ -55,6 +57,7 @@ import {
 } from './types.ts';
 import { chapterOrdinalOf } from './ordinal.ts';
 import { withSaveLock } from '../routes/docs.ts';
+import { beginTransaction, journalDirOf, type Transaction } from './journal.ts';
 
 /** 带稳定错误码的关系操作错误 */
 export class RelationError extends Error {
@@ -244,8 +247,10 @@ export class GraphService {
     if (def.acyclic) {
       const cycle = await this.findCycle(input.fromId, input.toId, def.key, input.excludeRelationId);
       if (cycle) {
+        // cycle 的首尾都是起点，直接 join 即可；再补一次起点会写出
+        // 「苏晚 → 林远 → 苏晚 → 苏晚」这种重复尾巴。
         const names = cycle.map((id) => byId.get(id)?.name ?? id).join(' → ');
-        throw new RelationError('rel_cycle', `「${def.label}」不能成环：${names} → ${byId.get(input.fromId)?.name ?? input.fromId}`);
+        throw new RelationError('rel_cycle', `「${def.label}」不能成环：${names}`);
       }
     }
 
@@ -473,6 +478,235 @@ export class GraphService {
 
     if (!found) {
       throw new RelationError('rel_not_found', `关系在条目文件里找不到：${relationId}`, 409);
+    }
+  }
+
+  // ─────────────────────── 多文件操作（G3） ───────────────────────
+  //
+  // 下面这些操作都必须同时改两个条目文件。走事务日志：
+  // 先记日志再应用，崩溃后下次打开作品时前滚补齐。
+
+  /**
+   * 反转关系方向：A→B 变成 B→A。
+   *
+   * 实现：A 的文件删掉这一行，B 的文件新增一行（id 保持不变，
+   * 这样已经被引用的关系 id 不会失效）。
+   */
+  async reverse(relationId: string): Promise<Relation> {
+    const row = this.ctx.index.getRelation(relationId);
+    if (!row) {
+      throw new RelationError('rel_not_found', `关系不存在：${relationId}`, 404);
+    }
+
+    const table = await loadRelationTypes(this.ctx.root);
+    const def = table.byKey.get(row.type);
+    if (def && !def.directed) {
+      throw new RelationError(
+        'rel_not_reversible',
+        `「${def.label}」是无向关系，反转没有意义。`,
+      );
+    }
+
+    if (row.from_id === row.to_id) {
+      throw new RelationError('rel_self_loop', '自指关系无法反转。');
+    }
+
+    const entities = await this.ctx.store.listEntities();
+    const byId = new Map(entities.map((e) => [e.id, e]));
+    const fromEntity = byId.get(row.from_id);
+    const toEntity = byId.get(row.to_id);
+    if (!fromEntity || !toEntity) {
+      throw new RelationError('rel_target_missing', '关系的一端条目已不存在，无法反转。', 404);
+    }
+
+    // 反转后端点角色互换，需要重新校验方向约束
+    await this.validate({
+      fromId: row.to_id,
+      toId: row.from_id,
+      typeKey: row.type,
+      since: row.since,
+      until: row.until,
+      // 必须排除被反转的这条关系本身：检查「反转后是否成环」时，
+      // 原来的 A→B 还留在索引里，如果不排除，它会立刻和待写的 B→A
+      // 组成一个假环（实测报「师徒不能成环：苏晚 → 林远 → 苏晚」）。
+      excludeRelationId: relationId,
+    });
+
+    // 用同一把锁锁住两个条目（按 id 排序加锁，避免死锁）
+    const [lockA, lockB] = [row.from_id, row.to_id].sort();
+
+    return withSaveLock(this.ctx, lockA, () =>
+      withSaveLock(this.ctx, lockB, async () => {
+        const tx = beginTransaction(
+          this.ctx.root,
+          journalDirOf(this.ctx.store.paths.studio),
+          `反转关系 ${relationId}：${fromEntity.name} → ${toEntity.name}`,
+        );
+
+        // 源文件：移除这一行
+        const srcPlan = await this.planMutation(row.from_id, (lines) => {
+          const idx = lines.findIndex((l) => l.kind === 'rel' && l.rel.id === relationId);
+          if (idx === -1) {
+            throw new RelationError(
+              'rel_not_found',
+              '关系在条目文件里找不到（索引与文件不一致，请重建索引）。',
+              409,
+            );
+          }
+          lines.splice(idx, 1);
+          return null;
+        });
+        tx.stage(srcPlan.relPath, srcPlan.before, srcPlan.after);
+
+        // 目标文件：加入反向后的一行
+        const reversedRel = {
+          id: relationId,
+          type: row.type,
+          to: row.from_id,
+          to_name: fromEntity.name,
+          note: row.note,
+          ...(row.since ? { since: row.since } : {}),
+          ...(row.until ? { until: row.until } : {}),
+          ...(row.reveal ? { reveal: row.reveal } : {}),
+          ...(row.weight !== null ? { weight: row.weight } : {}),
+          ...(row.extra ? { extra_props: row.extra } : {}),
+        };
+
+        const dstPlan = await this.planMutation(row.to_id, (lines) => {
+          lines.push({ kind: 'rel', rel: reversedRel });
+          return null;
+        });
+        tx.stage(dstPlan.relPath, dstPlan.before, dstPlan.after);
+
+        await tx.commit();
+
+        // 两个条目的索引都要刷新
+        await this.ctx.indexer.indexRelationsOf(row.from_id);
+        await this.ctx.indexer.indexRelationsOf(row.to_id);
+
+        return { ...reversedRel, from: row.to_id } as Relation;
+      }),
+    );
+  }
+
+  /**
+   * 接续关系端点：把 A→B 改成 A→C。
+   *
+   * 只改 A 的文件就够了（起点没变）—— 除非旧终点 B 那边还存着反向视角的行。
+   * 本工具的关系只存在起点文件里，所以这里其实仍是单文件操作，
+   * 但仍然走事务（统一路径，且将来若支持反向存储也能安全扩展）。
+   */
+  async retarget(relationId: string, newToId: string): Promise<Relation> {
+    const row = this.ctx.index.getRelation(relationId);
+    if (!row) {
+      throw new RelationError('rel_not_found', `关系不存在：${relationId}`, 404);
+    }
+    if (row.to_id === newToId) {
+      throw new RelationError('rel_same_target', '目标条目没有变化。');
+    }
+
+    const table = await loadRelationTypes(this.ctx.root);
+    const nextType = row.type;
+    if (!resolveTypeKey(table, nextType)) {
+      throw new RelationError('rel_type_unknown', `未知的关系类型「${nextType}」。`);
+    }
+
+    await this.validate({
+      fromId: row.from_id,
+      toId: newToId,
+      typeKey: nextType,
+      since: row.since,
+      until: row.until,
+      excludeRelationId: relationId,
+    });
+
+    const entities = await this.ctx.store.listEntities();
+    const target = entities.find((e) => e.id === newToId);
+
+    return withSaveLock(this.ctx, row.from_id, async () => {
+      const tx = beginTransaction(
+        this.ctx.root,
+        journalDirOf(this.ctx.store.paths.studio),
+        `关系 ${relationId} 改指向 ${target?.name ?? newToId}`,
+      );
+
+      const plan = await this.planMutation(row.from_id, (lines) => {
+        const line = lines.find((l) => l.kind === 'rel' && l.rel.id === relationId);
+        if (!line || line.kind !== 'rel') {
+          throw new RelationError(
+            'rel_not_found',
+            '关系在条目文件里找不到（索引与文件不一致，请重建索引）。',
+            409,
+          );
+        }
+        // 就地替换：保持行位置
+        line.rel = {
+          ...line.rel,
+          to: newToId,
+          to_name: target?.name,
+        };
+        return null;
+      });
+      tx.stage(plan.relPath, plan.before, plan.after);
+      await tx.commit();
+
+      await this.ctx.indexer.indexRelationsOf(row.from_id);
+
+      return {
+        id: row.id,
+        type: row.type,
+        from: row.from_id,
+        to: newToId,
+        ...(target ? { to_name: target.name } : {}),
+        note: row.note,
+        ...(row.since ? { since: row.since } : {}),
+        ...(row.until ? { until: row.until } : {}),
+        ...(row.reveal ? { reveal: row.reveal } : {}),
+        ...(row.weight !== null ? { weight: row.weight } : {}),
+      } as Relation;
+    });
+  }
+
+  /**
+   * 只计算改动、不落盘：返回「文件相对路径 + 改前 + 改后」。
+   * 供事务登记使用。
+   */
+  private async planMutation(
+    entityId: string,
+    fn: (lines: RelationLine[]) => unknown,
+  ): Promise<{ relPath: string; before: string; after: string }> {
+    const located = await this.ctx.store.entityRelationsRaw(entityId);
+    if (!located) {
+      throw new RelationError('rel_entity_missing', `条目不存在：${entityId}`, 404);
+    }
+
+    const before = await readTextSafe(located.abs);
+    if (before === null) {
+      throw new RelationError('rel_entity_missing', `条目文件读不到：${entityId}`, 404);
+    }
+
+    const { data, body } = parseFrontmatter(before);
+    const lines = parseRelations(typeof data.relations === 'string' ? data.relations : '');
+    fn(lines);
+
+    const block = stringifyRelations(lines);
+    const next: Frontmatter = { ...data };
+    if (block.trim()) next.relations = block;
+    else delete next.relations;
+    next.updated_at = Date.now();
+
+    const after = stringifyScene(next, body);
+    const relPath = path.relative(this.ctx.root, located.abs).split(path.sep).join('/');
+    return { relPath, before, after };
+  }
+
+  /** 当前是否还有未完成的事务日志（调试与自检用） */
+  async hasPendingJournal(): Promise<boolean> {
+    try {
+      const files = await fs.readdir(journalDirOf(this.ctx.store.paths.studio));
+      return files.some((f) => f.endsWith('.json'));
+    } catch {
+      return false;
     }
   }
 

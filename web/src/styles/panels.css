@@ -2039,3 +2039,12 @@
   gap: var(--sp-2);
   justify-content: flex-end;
 }
+
+/* 改指向表单里的「当前指向」提示 */
+.p-rel-current {
+  font-size: var(--fs-xs);
+  color: var(--ink-4);
+  padding: 3px 0;
+  border-bottom: 1px dashed var(--paper-4);
+  margin-bottom: 2px;
+}

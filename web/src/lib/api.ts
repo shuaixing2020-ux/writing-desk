@@ -273,6 +273,14 @@ export const api = {
   deleteRelation: (relationId: string) =>
     del<{ ok: true }>(`${projectPrefix()}/relations/${encodeURIComponent(relationId)}`),
 
+  /** 反转关系方向（多文件操作，服务端走事务日志） */
+  reverseRelation: (relationId: string) =>
+    post<Relation>(`${projectPrefix()}/relations/${encodeURIComponent(relationId)}/reverse`),
+
+  /** 改关系指向（多文件操作，服务端走事务日志） */
+  retargetRelation: (relationId: string, to: string) =>
+    post<Relation>(`${projectPrefix()}/relations/${encodeURIComponent(relationId)}/retarget`, { to }),
+
   listRelationTypes: () =>
     get<{ types: RelationTypeDef[]; warnings: string[] }>(`${projectPrefix()}/relation-types`),
 

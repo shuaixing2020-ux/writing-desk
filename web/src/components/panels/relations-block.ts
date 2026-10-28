@@ -55,6 +55,7 @@ export function renderRelationSection(opts: RelationSectionOptions): HTMLElement
   };
   let formOpen = false;
   let editingId: string | null = null;
+  let retargetingId: string | null = null;
   let lastError: string | null = null;
 
   const load = async (): Promise<void> => {
@@ -263,6 +264,60 @@ export function renderRelationSection(opts: RelationSectionOptions): HTMLElement
           '编辑',
         ),
       );
+      // 反转方向：只对有向关系提供（无向关系反转没有意义）
+      if (def?.directed) {
+        ops.appendChild(
+          h(
+            'button',
+            {
+              class: 'p-rel-op',
+              type: 'button',
+              title: '把「A → B」变成「B → A」，会同时改动两个条目文件',
+              onclick: () => {
+                void (async () => {
+                  const ok = await confirmDanger(ctx, {
+                    title: '反转关系方向',
+                    message:
+                      `把「${otherName} ${def.label} ${entity.name}」变成` +
+                      `「${entity.name} ${def.label} ${otherName}」？\n\n` +
+                      `这会同时修改「${entity.name}」和「${otherName}」两个条目文件。`,
+                    confirmText: '反转',
+                  });
+                  if (!ok) return;
+                  try {
+                    await ctx.api.reverseRelation(rel.id);
+                    toast(ctx, '已反转方向', 'ok');
+                    await load();
+                    opts.onChanged();
+                  } catch (err) {
+                    toast(ctx, `反转失败：${errText(err)}`, 'error');
+                  }
+                })();
+              },
+            },
+            '反转',
+          ),
+        );
+      }
+
+      // 改指向：把关系连到另一个条目
+      ops.appendChild(
+        h(
+          'button',
+          {
+            class: 'p-rel-op',
+            type: 'button',
+            onclick: () => {
+              retargetingId = rel.id;
+              formOpen = false;
+              editingId = null;
+              render();
+            },
+          },
+          '改指向',
+        ),
+      );
+
       ops.appendChild(
         h(
           'button',
@@ -295,12 +350,90 @@ export function renderRelationSection(opts: RelationSectionOptions): HTMLElement
 
     if (ops.childElementCount > 0) row.appendChild(ops);
 
+    // 改指向的内联表单
+    if (retargetingId === rel.id) {
+      row.appendChild(renderRetargetForm(rel));
+    }
+
     // 编辑态：就地展开表单
     if (editingId === rel.id) {
       row.appendChild(renderForm(rel));
     }
 
     return row;
+  }
+
+  /** 改指向表单：只换目标条目，其他字段原样保留 */
+  function renderRetargetForm(rel: Relation): HTMLElement {
+    const form = h('div', { class: 'p-rel-form' });
+    const errorHost = h('div', { class: 'p-rel-error hidden' });
+
+    const def = typeOf(rel.type);
+    const allowedTypes = def ? targetTypesFor(def) : [];
+    const candidates = opts.entities
+      .filter((e) => e.id !== entity.id && e.id !== rel.to)
+      .filter((e) => allowedTypes.length === 0 || allowedTypes.includes(e.type))
+      .sort((a, b) => a.name.localeCompare(b.name, 'zh'));
+
+    form.appendChild(h('div', { class: 'p-rel-current' }, `当前指向：${rel.to_name ?? rel.to}`));
+
+    const select = h('select', { class: 'select' }) as HTMLSelectElement;
+    if (candidates.length === 0) {
+      const o = document.createElement('option');
+      o.value = '';
+      o.textContent = '没有符合类型要求的目标';
+      select.appendChild(o);
+    } else {
+      for (const e of candidates) {
+        const o = document.createElement('option');
+        o.value = e.id;
+        o.textContent = `${e.name}（${ENTITY_TYPE_LABELS[e.type] ?? e.type}）`;
+        select.appendChild(o);
+      }
+    }
+    form.appendChild(h('label', { class: 'p-rel-field' }, h('span', null, '改为指向'), select));
+    form.appendChild(errorHost);
+
+    const submit = h('button', { class: 'btn sm primary', type: 'button' }, '确定');
+    const cancel = h(
+      'button',
+      {
+        class: 'btn sm',
+        type: 'button',
+        onclick: () => {
+          retargetingId = null;
+          render();
+        },
+      },
+      '取消',
+    );
+
+    submit.addEventListener('click', () => {
+      void (async () => {
+        errorHost.classList.add('hidden');
+        if (!select.value) {
+          errorHost.textContent = '请选择一个新的目标条目。';
+          errorHost.classList.remove('hidden');
+          return;
+        }
+        submit.disabled = true;
+        try {
+          await ctx.api.retargetRelation(rel.id, select.value);
+          toast(ctx, '已改指向', 'ok');
+          retargetingId = null;
+          await load();
+          opts.onChanged();
+        } catch (err) {
+          errorHost.textContent = errText(err);
+          errorHost.classList.remove('hidden');
+        } finally {
+          submit.disabled = false;
+        }
+      })();
+    });
+
+    form.appendChild(h('div', { class: 'p-rel-form-ops' }, submit, cancel));
+    return form;
   }
 
   /** 新增/编辑表单 */

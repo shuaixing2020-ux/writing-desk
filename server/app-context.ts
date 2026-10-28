@@ -20,6 +20,7 @@ import { ProjectStore } from './store/project.ts';
 import { IndexDb } from './db/index.ts';
 import { IndexerService } from './services/indexer.ts';
 import { BackupScheduler } from './services/backup-scheduler.ts';
+import { journalDirOf, recoverPending } from './graph/journal.ts';
 import { SnapshotService } from './services/snapshot.ts';
 import { BackupService } from './services/backup.ts';
 import { LintService } from './services/lint.ts';
@@ -115,6 +116,24 @@ export function createAppContext(dataDir: string): AppContextImpl {
       const index = await IndexDb.open(store.paths.indexDb);
       const ctx = buildProjectContext(root, id, store, index);
 
+      // 先补齐上次没走完的多文件事务（关系方向反转、端点接续等）。
+      // 必须在建索引之前做 —— 否则索引会基于"半边关系"的文件建立。
+      try {
+        const { recovered, failed } = await recoverPending(
+          root,
+          journalDirOf(store.paths.studio),
+        );
+        if (recovered.length > 0) {
+          console.log(`[app-context] ${id} 补齐了 ${recovered.length} 个未完成的多文件操作`);
+        }
+        for (const f of failed) {
+          console.error(`[app-context] ${id} 未完成操作 ${f.id} 恢复失败：${f.error}`);
+        }
+      } catch (err) {
+        // 恢复失败不能阻塞作品打开：文件仍在，作者至少能读到内容
+        console.error(`[app-context] ${id} 事务日志恢复出错：`, err);
+      }
+
       try {
         // 索引可重建：首次打开或索引丢失时这里会静默全量重建
         await ctx.indexer.ensureFresh();
@@ -200,6 +219,64 @@ export function createAppContext(dataDir: string): AppContextImpl {
  * 前两者是 O(1)，最后一条只在「作品从没打开过」时发生一次，
  * 换来的是作品选择器里不出现「0 字」的假数据。
  */
+/**
+ * 启动时扫描所有作品，补齐上次没走完的多文件事务。
+ *
+ * 为什么要在启动时做，而不是只依赖「打开作品时恢复」：
+ *   崩溃发生在写关系的中途时，文件处于「半边」状态。如果作者重启服务后
+ *   没点开那个作品，不一致状态就会一直留在磁盘上 —— 用户用任何编辑器
+ *   或 git 看到的都是错的。启动时统一扫一遍，代价只是读几个目录。
+ *
+ * 只处理日志，不打开作品、不建索引（那些等真正访问时再做）。
+ */
+export async function recoverAllPending(
+  dataDir: string,
+): Promise<{ projects: number; recovered: number; failed: number }> {
+  let projects = 0;
+  let recovered = 0;
+  let failed = 0;
+
+  let names: string[];
+  try {
+    names = await fs.readdir(dataDir);
+  } catch {
+    return { projects, recovered, failed };
+  }
+
+  for (const name of names) {
+    const root = path.join(dataDir, name);
+    const studioDir = path.join(root, '.studio');
+    const journalDir = journalDirOf(studioDir);
+
+    // 只处理确实有日志目录的作品，避免为每个目录 stat 一遍
+    const hasJournal = await fs
+      .stat(journalDir)
+      .then((st) => st.isDirectory())
+      .catch(() => false);
+    if (!hasJournal) continue;
+
+    projects++;
+    const result = await recoverPending(root, journalDir).catch((err) => {
+      console.error(`[app-context] 恢复 ${name} 的未完成事务失败：`, err);
+      return { recovered: [], failed: [{ id: name, error: String(err) }] };
+    });
+
+    recovered += result.recovered.length;
+    failed += result.failed.length;
+
+    if (result.recovered.length > 0) {
+      console.log(
+        `[app-context] ${name} 补齐了 ${result.recovered.length} 个未完成的多文件操作`,
+      );
+    }
+    for (const f of result.failed) {
+      console.error(`[app-context] ${name} 未完成操作 ${f.id} 恢复失败：${f.error}`);
+    }
+  }
+
+  return { projects, recovered, failed };
+}
+
 export async function listProjectSummaries(
   dataDir: string,
   appCtx?: AppContext,

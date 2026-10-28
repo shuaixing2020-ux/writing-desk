@@ -5,10 +5,13 @@
  * POST   /api/projects/:pid/entities/:id/relations   → Relation（?dry_run=1 只校验）
  * PATCH  /api/projects/:pid/relations/:rid           → Relation（?dry_run=1 只校验）
  * DELETE /api/projects/:pid/relations/:rid
+ * POST   /api/projects/:pid/relations/:rid/reverse   → 反转方向（多文件，走事务日志）
+ * POST   /api/projects/:pid/relations/:rid/retarget  → 改指向（多文件，走事务日志）
  * GET    /api/projects/:pid/relation-types           → { types, warnings }
  * GET    /api/projects/:pid/relations/lint           → GraphLintIssue[]
  *
- * 所有写操作只改**起点条目那一个文件**（见 server/graph/service.ts 的范围说明）。
+ * create / update / remove 只改起点那一个文件；
+ * reverse / retarget 要动两个文件，走 server/graph/journal.ts 的事务日志。
  */
 
 import type { FastifyInstance } from 'fastify';
@@ -110,6 +113,35 @@ export function registerGraphRoutes(app: FastifyInstance, appCtx: AppContextImpl
       if (!parseDryRun(query)) {
         appCtx.broadcast({ type: 'tree_changed', project_id: ctx.id });
       }
+      return rel;
+    } catch (err) {
+      rethrow(err);
+    }
+  });
+
+  // ── 反转方向（多文件操作，走事务日志） ──
+  app.post('/api/projects/:pid/relations/:rid/reverse', async (request) => {
+    const { pid, rid } = request.params as { pid: string; rid: string };
+    const ctx = await projectOf(appCtx, pid);
+    try {
+      const rel = await new GraphService(ctx).reverse(rid);
+      appCtx.broadcast({ type: 'tree_changed', project_id: ctx.id });
+      return rel;
+    } catch (err) {
+      rethrow(err);
+    }
+  });
+
+  // ── 改指向（多文件操作，走事务日志） ──
+  app.post('/api/projects/:pid/relations/:rid/retarget', async (request) => {
+    const { pid, rid } = request.params as { pid: string; rid: string };
+    const ctx = await projectOf(appCtx, pid);
+    const body = (request.body ?? {}) as Record<string, unknown>;
+    const to = requireString(body.to, 'to', { max: 120 });
+
+    try {
+      const rel = await new GraphService(ctx).retarget(rid, to);
+      appCtx.broadcast({ type: 'tree_changed', project_id: ctx.id });
       return rel;
     } catch (err) {
       rethrow(err);

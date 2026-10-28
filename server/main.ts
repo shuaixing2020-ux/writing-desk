@@ -19,7 +19,7 @@ import fastifyStatic from '@fastify/static';
 import fastifyWebsocket from '@fastify/websocket';
 import type { WsEvent } from '../shared/types.ts';
 import type { AppContextImpl } from './app-context.ts';
-import { createAppContext, listProjectSummaries } from './app-context.ts';
+import { createAppContext, listProjectSummaries, recoverAllPending } from './app-context.ts';
 import { HttpError } from './routes/shared.ts';
 import { registerProjectRoutes } from './routes/projects.ts';
 import { registerMetaRoutes } from './routes/meta.ts';
@@ -52,6 +52,16 @@ export async function buildServer(dataDir: string): Promise<{
   app: FastifyInstance;
   appCtx: AppContextImpl;
 }> {
+  // 启动即补齐上次崩溃留下的半截事务（多文件关系操作）。
+  // 必须在监听端口之前完成：否则第一个请求可能读到「半边」数据。
+  const recovery = await recoverAllPending(dataDir);
+  if (recovery.recovered > 0 || recovery.failed > 0) {
+    console.log(
+      `  事务恢复   补齐 ${recovery.recovered} 个未完成操作` +
+        (recovery.failed > 0 ? `，${recovery.failed} 个失败（见日志）` : ''),
+    );
+  }
+
   const appCtx = createAppContext(dataDir);
 
   const app = Fastify({

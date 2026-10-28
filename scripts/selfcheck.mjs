@@ -703,6 +703,92 @@ async function main() {
       return `悬空 ${lint.filter((i) => i.code === 'relation_dangling_target').length} 条`;
     });
 
+    await check('关系：反转方向（多文件操作 + 事务日志）', async () => {
+      const mk = async (name) => {
+        const r = await fetch(`${BASE}/api/projects/${projectId}/entities`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ type: 'character', name }),
+        });
+        return r.json();
+      };
+      const a = await mk('反转甲');
+      const b = await mk('反转乙');
+
+      const create = await fetch(`${BASE}/api/projects/${projectId}/entities/${a.id}/relations`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ type: 'mentor', to: b.id, note: '反转测试' }),
+      });
+      assert(create.status === 200, `建关系失败 HTTP ${create.status}`);
+      const rel = await create.json();
+
+      const rev = await fetch(`${BASE}/api/projects/${projectId}/relations/${rel.id}/reverse`, {
+        method: 'POST',
+      });
+      assert(rev.status === 200, `反转失败 HTTP ${rev.status}`);
+      const reversed = await rev.json();
+      assert(reversed.from === b.id, '起点应变成原终点');
+      assert(reversed.to === a.id, '终点应变成原起点');
+      assert(reversed.id === rel.id, 'id 必须保持不变');
+
+      // 两个条目的索引都要更新
+      const va = await (await fetch(`${BASE}/api/projects/${projectId}/entities/${a.id}/relations`)).json();
+      const vb = await (await fetch(`${BASE}/api/projects/${projectId}/entities/${b.id}/relations`)).json();
+      assert(va.out.length === 0 && va.in.length === 1, `反转后甲应只有入向，实际 out=${va.out.length} in=${va.in.length}`);
+      assert(vb.out.length === 1 && vb.in.length === 0, `反转后乙应只有出向，实际 out=${vb.out.length} in=${vb.in.length}`);
+
+      // 事务日志必须清理干净（没有未完成的事务）
+      const journalDir = path.join(dataDir, projectId, '.studio', 'journal');
+      const pending = (await fs.readdir(journalDir).catch(() => [])).filter((f) => f.endsWith('.json'));
+      assert(pending.length === 0, `事务完成后不应留下日志，实际 ${pending.length} 个`);
+
+      return '方向已反转，日志已清理';
+    });
+
+    await check('关系：改指向（多文件操作）', async () => {
+      const list = await (await fetch(`${BASE}/api/projects/${projectId}/entities`)).json();
+      const a = list.find((e) => e.name === '反转甲');
+      const b = list.find((e) => e.name === '反转乙');
+      const mk = async (name) => {
+        const r = await fetch(`${BASE}/api/projects/${projectId}/entities`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ type: 'character', name }),
+        });
+        return r.json();
+      };
+      const c = await mk('反转丙');
+
+      // 现在 b→a，把它改成 b→c
+      const vb = await (await fetch(`${BASE}/api/projects/${projectId}/entities/${b.id}/relations`)).json();
+      const rel = vb.out[0];
+      assert(rel, '缺少待改指向的关系');
+
+      const res = await fetch(`${BASE}/api/projects/${projectId}/relations/${rel.id}/retarget`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ to: c.id }),
+      });
+      assert(res.status === 200, `改指向失败 HTTP ${res.status}`);
+      const updated = await res.json();
+      assert(updated.to === c.id, '目标应已改变');
+
+      const after = await (await fetch(`${BASE}/api/projects/${projectId}/entities/${b.id}/relations`)).json();
+      assert(after.out[0]?.to === c.id, '索引未更新');
+      void a;
+      return `指向已改为「${c.name}」`;
+    });
+
+    await check('事务日志目录无残留（崩溃恢复前置条件）', async () => {
+      const journalDir = path.join(dataDir, projectId, '.studio', 'journal');
+      const exists = await fs.stat(journalDir).then(() => true).catch(() => false);
+      if (!exists) return '无日志目录（尚无多文件操作）';
+      const pending = (await fs.readdir(journalDir)).filter((f) => f.endsWith('.json'));
+      assert(pending.length === 0, `应无待恢复事务，实际 ${pending.length} 个`);
+      return '0 个待恢复事务';
+    });
+
     await check('灵感箱', async () => {
       const res = await fetch(`${BASE}/api/projects/${projectId}/inbox`, {
         method: 'POST',
