@@ -197,6 +197,7 @@ async function main(): Promise<void> {
     handlers: {
       onToggleSidebar: () => actions.toggleSidebar(),
       onToggleInspector: () => toggleInspector(),
+      onOpenGraph: () => openGraphView(),
       onToggleFocus: () => actions.toggleFocus(),
       onProjectMenu: () => openProjectSwitcher(),
       onOpenCommandPalette: () => openCommandPalette(),
@@ -1139,7 +1140,40 @@ async function main(): Promise<void> {
   // ─────────────────────── 快捷键 & 命令面板 ───────────────────────
 
   function openCommandPalette(): void {
-    overlays.commandPalette(buildCommands());
+    overlays.commandPalette({
+      items: buildCommands(),
+      // 命令面板同时承担「搜全书」：输入正文关键词能直接跳到场景
+      onSearch: async (query) => {
+        try {
+          const res = await api.search(query, { limit: 20 });
+          // 只保留可跳转的两类：场景与设定条目（note 暂不可跳）
+          return res.hits
+            .filter((h) => h.kind === 'scene' || h.kind === 'entity')
+            .map((h) => ({
+              doc_id: h.doc_id,
+              doc_title: h.doc_title,
+              kind: h.kind as 'scene' | 'entity',
+              path: h.path,
+              snippet: h.snippet,
+              count: h.count,
+            }));
+        } catch {
+          // 搜索失败不该让命令面板报错：当作没有命中
+          return [];
+        }
+      },
+      onPickHit: async (hit, query) => {
+        if (hit.kind === 'entity') {
+          actions.jumpToEntity(hit.doc_id);
+          return;
+        }
+        await selectDoc(hit.doc_id);
+        // 跳到该场景后定位到第一个命中处
+        const body = editor.getValue();
+        const idx = query ? body.indexOf(query) : -1;
+        if (idx >= 0) editor.revealRange(idx, idx + query.length);
+      },
+    });
   }
 
   function buildCommands(): CommandItem[] {
@@ -1149,14 +1183,6 @@ async function main(): Promise<void> {
 
     items.push(
       { id: 'save', title: '保存当前场景', group: '写作', hint: `${mod}S`, icon: ICONS.save, run: () => saveNow() },
-      {
-        id: 'graph',
-        title: '打开关系图谱',
-        group: '设定',
-        hint: '',
-        icon: ICONS.bible,
-        run: () => openGraphView(),
-      },
       {
         id: 'new-scene',
         title: '新建场景',
@@ -1240,6 +1266,14 @@ async function main(): Promise<void> {
     }
 
     items.push(
+      {
+        id: 'graph',
+        title: '打开关系图谱',
+        group: '视图',
+        keywords: '图谱 关系 网络 人物关系',
+        icon: ICONS.graph,
+        run: () => openGraphView(),
+      },
       {
         id: 'focus',
         title: '切换专注模式',

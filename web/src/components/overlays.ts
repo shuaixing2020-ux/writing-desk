@@ -44,6 +44,26 @@ export interface CommandItem {
   run: () => void | Promise<void>;
 }
 
+/** 命令面板里的全书搜索结果行 */
+export interface PaletteHit {
+  doc_id: string;
+  doc_title: string;
+  /** scene = 正文场景；entity = 设定条目 */
+  kind: 'scene' | 'entity';
+  path: string;
+  /** 命中片段（含 <mark> 高亮） */
+  snippet: string;
+  count: number;
+}
+
+export interface CommandPaletteOptions {
+  items: CommandItem[];
+  /** 全文搜索；返回命中的场景 */
+  onSearch?: (query: string) => Promise<PaletteHit[]>;
+  /** 选中某个命中结果（跳转并定位） */
+  onPickHit?: (hit: PaletteHit, query: string) => void | Promise<void>;
+}
+
 export interface ProjectSwitchOptions {
   projects: ProjectSummary[];
   currentId: string | null;
@@ -63,7 +83,7 @@ export interface Overlays {
   toast(message: string, kind?: ToastKind, ms?: number): void;
   confirm(opts: ConfirmOptions): Promise<boolean>;
   prompt(opts: PromptOptions): Promise<string | null>;
-  commandPalette(items: CommandItem[]): void;
+  commandPalette(opts: CommandPaletteOptions): void;
   projectSwitcher(opts: ProjectSwitchOptions): void;
   /** 通用弹层：kind 由调用方约定，render 负责内容 */
   open(
@@ -373,7 +393,15 @@ export function createOverlays(opts: { modalRoot: HTMLElement; toastWrap: HTMLEl
 
   // ─────────────── 命令面板 ───────────────
 
-  const commandPalette = (items: CommandItem[]): void => {
+  /**
+   * 命令面板。
+   *
+   * 除了执行命令，还接入了**全书搜索**：
+   * 输入正文关键词会同时列出命中的场景，选中即跳转并定位。
+   * 早先的版本占位符写着「搜索全书」但实际只过滤命令 —— UI 承诺了没做的事，
+   * 作者搜场景名却一无所获，看起来像「点不进去」。
+   */
+  const commandPalette = (o: CommandPaletteOptions): void => {
     open(
       'command',
       (body, closeFn) => {
@@ -383,7 +411,7 @@ export function createOverlays(opts: { modalRoot: HTMLElement; toastWrap: HTMLEl
           placeholder: '输入命令名，或输入正文关键词搜索全书…',
           'aria-label': '命令搜索',
           spellcheck: 'false',
-        });
+        }) as HTMLInputElement;
         const list = h('div', { class: 'cmdk-list' });
         const foot = h(
           'div',
@@ -393,56 +421,147 @@ export function createOverlays(opts: { modalRoot: HTMLElement; toastWrap: HTMLEl
           h('span', null, h('kbd', null, 'Esc'), ' 关闭'),
         );
 
+        /** 命令匹配结果 */
         let filtered: CommandItem[] = [];
+        /** 全书搜索命中的场景 */
+        let hits: PaletteHit[] = [];
+        /** 当前查询词（跳转定位时要用） */
+        let query = '';
+        /** 搜索请求序号：丢弃过期响应，避免快速输入时结果错乱 */
+        let searchSeq = 0;
+        let searchTimer: ReturnType<typeof setTimeout> | null = null;
         let sel = 0;
+
+        /** 统一的行列表：命令在前，搜索结果在后 */
+        const rows = (): Array<{ kind: 'cmd'; item: CommandItem } | { kind: 'hit'; hit: PaletteHit }> => [
+          ...filtered.map((item) => ({ kind: 'cmd' as const, item })),
+          ...hits.map((hit) => ({ kind: 'hit' as const, hit })),
+        ];
+
+        /**
+         * 只更新选中高亮，不重建 DOM。
+         *
+         * 早先的实现在 hover 时调用 paint() 整表重建，
+         * 正在被点击的那个元素会在 mousedown 与 click 之间被销毁，
+         * 于是点击永远落空（实测「点了没反应」）。
+         */
+        const updateSelection = (): void => {
+          for (const node of list.querySelectorAll<HTMLElement>('.cmdk-item')) {
+            node.classList.toggle('sel', Number(node.dataset.index) === sel);
+          }
+          list.querySelector('.cmdk-item.sel')?.scrollIntoView({ block: 'nearest' });
+        };
+
+        /** 执行某一行 */
+        const activate = (index: number): void => {
+          const row = rows()[index];
+          if (!row) return;
+          closeFn();
+          if (row.kind === 'cmd') {
+            void row.item.run();
+          } else {
+            void o.onPickHit?.(row.hit, query);
+          }
+        };
 
         const paint = (): void => {
           mount(list);
-          if (filtered.length === 0) {
+          const all = rows();
+
+          if (all.length === 0) {
             list.append(
               h(
                 'div',
                 { class: 'empty' },
                 h('span', { html: ICONS.search }),
-                h('div', null, '没有匹配的命令'),
-                h('div', { class: 'tiny' }, '换个关键词，或直接输入正文关键词搜索全书'),
+                h('div', null, query ? '没有匹配的命令或正文' : '没有可用的命令'),
+                h('div', { class: 'tiny' }, '换个关键词，或检查作品是否已打开'),
               ),
             );
             return;
           }
+
           let lastGroup = '';
-          filtered.forEach((item, index) => {
-            if (item.group && item.group !== lastGroup) {
-              lastGroup = item.group;
-              list.append(h('div', { class: 'cmdk-group' }, item.group));
+          all.forEach((row, index) => {
+            const group = row.kind === 'cmd' ? (row.item.group ?? '') : '正文';
+            if (group && group !== lastGroup) {
+              lastGroup = group;
+              list.append(h('div', { class: 'cmdk-group' }, group));
             }
+
+            const isCmd = row.kind === 'cmd';
+            const icon = isCmd ? row.item.icon : ICONS.file;
+            const title = isCmd ? row.item.title : row.hit.doc_title;
+            const hint = isCmd ? row.item.hint : row.hit.path;
+
             list.append(
               h(
                 'div',
                 {
-                  class: `cmdk-item${index === sel ? ' sel' : ''}`,
+                  class: `cmdk-item${index === sel ? ' sel' : ''}${isCmd ? '' : ' is-hit'}`,
                   dataset: { index: String(index) },
                   onmouseenter: () => {
+                    if (sel === index) return;
                     sel = index;
-                    paint();
+                    updateSelection();
                   },
-                  onclick: () => {
-                    closeFn();
-                    void item.run();
+                  onclick: (ev: MouseEvent) => {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    activate(index);
                   },
                 },
-                item.icon ? h('span', { class: 'cmdk-icon', html: item.icon }) : null,
-                h('span', { class: 'cmdk-title' }, item.title),
-                item.hint ? h('span', { class: 'kbd' }, item.hint) : null,
+                icon ? h('span', { class: 'cmdk-icon', html: icon }) : null,
+                h(
+                  'span',
+                  { class: 'cmdk-text' },
+                  h('span', { class: 'cmdk-title' }, title),
+                  // 搜索结果多一行命中片段，带 <mark> 高亮
+                  !isCmd && row.hit.snippet
+                    ? h('span', { class: 'cmdk-sub', html: row.hit.snippet })
+                    : null,
+                ),
+                hint ? h('span', { class: 'kbd' }, hint) : null,
               ),
             );
           });
-          list.querySelector('.cmdk-item.sel')?.scrollIntoView({ block: 'nearest' });
+          updateSelection();
+        };
+
+        /** 触发全书搜索（防抖，丢弃过期响应） */
+        const runSearch = (q: string): void => {
+          if (searchTimer) clearTimeout(searchTimer);
+          const trimmed = q.trim();
+          // 先取到局部变量：闭包里访问 o.onSearch 会丢掉非空窄化
+          const searchFn = o.onSearch;
+
+          if (!trimmed || !searchFn) {
+            hits = [];
+            paint();
+            return;
+          }
+
+          searchTimer = setTimeout(() => {
+            const seq = ++searchSeq;
+            void searchFn(trimmed)
+              .then((result) => {
+                if (seq !== searchSeq) return; // 过期响应，丢弃
+                hits = result;
+                if (sel >= filtered.length) sel = 0;
+                paint();
+              })
+              .catch(() => {
+                if (seq !== searchSeq) return;
+                hits = [];
+                paint();
+              });
+          }, 200);
         };
 
         const refilter = (): void => {
-          const q = input.value;
-          filtered = items
+          query = input.value;
+          const q = query;
+          filtered = o.items
             .map((item) => ({
               item,
               score: Math.max(
@@ -455,6 +574,7 @@ export function createOverlays(opts: { modalRoot: HTMLElement; toastWrap: HTMLEl
             .sort((a, b) => b.score - a.score)
             .map((x) => x.item);
           sel = 0;
+          runSearch(q);
           paint();
         };
 
@@ -462,25 +582,23 @@ export function createOverlays(opts: { modalRoot: HTMLElement; toastWrap: HTMLEl
         input.addEventListener('keydown', (ev) => {
           const kev = ev as KeyboardEvent;
           if (kev.isComposing) return;
+          const count = rows().length;
           if (kev.key === 'ArrowDown') {
             kev.preventDefault();
-            sel = Math.min(sel + 1, filtered.length - 1);
-            paint();
+            sel = Math.min(sel + 1, Math.max(0, count - 1));
+            updateSelection();
           } else if (kev.key === 'ArrowUp') {
             kev.preventDefault();
             sel = Math.max(sel - 1, 0);
-            paint();
+            updateSelection();
           } else if (kev.key === 'Enter') {
             kev.preventDefault();
-            const item = filtered[sel];
-            if (item) {
-              closeFn();
-              void item.run();
-            }
+            activate(sel);
           }
         });
 
         body.append(h('div', { class: 'cmdk' }, input, list, foot));
+        // 初始化：显示全部命令（去掉空查询时的搜索）
         refilter();
         requestAnimationFrame(() => input.focus());
       },

@@ -57,6 +57,8 @@ export const ICONS: Record<string, string> = {
   typewriter: svg('<path d="M2.6 3.6h10.8M2.6 7.6h7M2.6 11.6h9.4"/>'),
   keyboard: svg('<rect x="1.8" y="4" width="12.4" height="8" rx="1.4"/><path d="M4.4 6.4h.2M7 6.4h.2M9.6 6.4h.2M5.2 9.4h5.6"/>'),
   link: svg('<path d="M6.4 9.6 9.6 6.4"/><path d="M6.8 4.4l1-1a2.6 2.6 0 0 1 3.7 3.7l-1 1"/><path d="M9.2 11.6l-1 1a2.6 2.6 0 0 1-3.7-3.7l1-1"/>'),
+  // 关系图谱：三个节点 + 连线
+  graph: svg('<circle cx="3.6" cy="11.8" r="1.8"/><circle cx="8" cy="3.8" r="1.8"/><circle cx="12.4" cy="11.8" r="1.8"/><path d="M5 10.2 7 5.6M9 5.6l2 4.6M5.4 11.8h5.2"/>'),
   clock: svg('<circle cx="8" cy="8" r="6"/><path d="M8 4.6V8l2.4 1.6"/>'),
   wifi: svg('<path d="M2 6.2a8.4 8.4 0 0 1 12 0M4.4 8.8a5 5 0 0 1 7.2 0"/><path d="M7 11.4l1 1 1-1"/>'),
   wifiOff: svg('<path d="M2 6.2a8.4 8.4 0 0 1 4-2.2M10 4.3a8.4 8.4 0 0 1 4 1.9M4.4 8.8a5 5 0 0 1 2.6-1.3M11.2 8.9l.4-.1"/><path d="M2.6 2.6l10.8 10.8"/><path d="M7 11.4l1 1 1-1"/>'),
@@ -72,6 +74,8 @@ export const ICONS: Record<string, string> = {
 export interface ShellHandlers {
   onToggleSidebar(): void;
   onToggleInspector(): void;
+  /** 打开关系图谱（全屏视图） */
+  onOpenGraph(): void;
   onToggleFocus(): void;
   onProjectMenu(anchor: HTMLElement): void;
   onOpenCommandPalette(): void;
@@ -214,6 +218,19 @@ export function createShell(root: HTMLElement, opts: ShellOptions): ShellHandle 
     html: ICONS.focus,
     onclick: () => handlers.onToggleFocus(),
   });
+  /**
+   * 关系图谱的显眼入口。
+   * 之前只能从命令面板找到，作者抱怨「太难找」——
+   * 这是核心功能之一，值得常驻顶栏。
+   */
+  const graphBtn = h('button', {
+    class: 'icon-btn',
+    title: '关系图谱',
+    'aria-label': '打开关系图谱',
+    html: ICONS.graph,
+    onclick: () => handlers.onOpenGraph(),
+  });
+
   const inspectorBtn = h('button', {
     class: 'icon-btn',
     title: '面板（⌘J）',
@@ -227,7 +244,7 @@ export function createShell(root: HTMLElement, opts: ShellOptions): ShellHandle 
     { class: 'topbar' },
     h('div', { class: 'topbar-left' }, sidebarBtn, projectChip),
     h('div', { class: 'topbar-center' }, searchBtn),
-    h('div', { class: 'topbar-right' }, goalMini, saveInd, focusBtn, inspectorBtn),
+    h('div', { class: 'topbar-right' }, goalMini, saveInd, graphBtn, focusBtn, inspectorBtn),
   );
 
   // ── 侧栏 ──

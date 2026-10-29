@@ -411,6 +411,52 @@ async function main() {
       assert(!opts.includes('导致'), `角色不应能选「导致」，实际：${opts.join(', ')}`);
     });
 
+    await check('命令面板：点击命令项能执行', async () => {
+      await page.keyboard.press('ControlOrMeta+k');
+      await page.waitForTimeout(700);
+      const items = await page.locator('.cmdk-item').count();
+      assert(items > 0, '命令面板没有列出命令');
+
+      // 点「切换打字机模式」，验证命令真的执行了
+      await page.locator('.cmdk-item', { hasText: '切换打字机模式' }).first().click();
+      await page.waitForTimeout(1200);
+      const closed = await page.locator('.cmdk').count();
+      assert(closed === 0, '执行命令后命令面板应关闭');
+      const tw = await page.evaluate(() => document.querySelectorAll('[class*="typewriter"]').length);
+      assert(tw > 0, '命令未生效（打字机模式没有开启）');
+    });
+
+    await check('命令面板：搜正文关键词可跳进场景', async () => {
+      await page.keyboard.press('ControlOrMeta+k');
+      await page.waitForTimeout(700);
+      // 测试作品的场景正文里有「夜雨敲窗」
+      await page.keyboard.type('夜雨', { delay: 40 });
+      await page.waitForTimeout(1600);
+
+      const hits = await page.locator('.cmdk-item.is-hit').count();
+      assert(hits > 0, '没有搜索到正文命中');
+
+      await page.locator('.cmdk-item.is-hit').first().click();
+      await page.waitForTimeout(2200);
+
+      const closed = await page.locator('.cmdk').count();
+      assert(closed === 0, '跳转后命令面板应关闭');
+      const body = await page.locator('body').innerText();
+      assert(body.includes('夜雨敲窗'), '未跳到命中的场景');
+      // 面包屑应指向该场景
+      assert(/雨夜/.test(body), '编辑器没有切换到目标场景');
+    });
+
+    await check('顶栏有图谱入口且可打开', async () => {
+      const btn = page.locator('.topbar .icon-btn[title="关系图谱"]');
+      assert((await btn.count()) === 1, '顶栏缺少关系图谱入口');
+      await btn.first().click();
+      await page.waitForTimeout(2500);
+      assert((await page.locator('.gv-root').count()) === 1, '点击顶栏按钮未打开图谱');
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(700);
+    });
+
     await check('关系图谱可打开并渲染节点', async () => {
       // 用命令面板打开图谱
       await page.keyboard.press('ControlOrMeta+k');
