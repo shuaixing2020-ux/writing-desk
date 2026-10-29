@@ -49,6 +49,61 @@ const DEVICES = [
 ];
 
 const browser = await launch();
+
+/**
+ * 创建本次测试专用的作品。
+ *
+ * 为什么不直接写示例作品：早先的实现往「示例小说」的「雨夜来客」里打字，
+ * 每跑一次测试就在用户的作品里留下「移动端测试-<时间戳>」，
+ * 跑几十次后正文变成一串垃圾。测试必须只碰自己创建的数据。
+ */
+const TEST_PROJECT_TITLE = `移动端测试-${Date.now()}`;
+async function createTestProject() {
+  const json = async (url, body) => {
+    const r = await fetch(`${BASE}${url}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    assert(r.ok, `创建测试数据失败：${url} → HTTP ${r.status}`);
+    return r.json();
+  };
+
+  const project = await json('/api/projects', { title: TEST_PROJECT_TITLE });
+  const pid = encodeURIComponent(project.id);
+  const volume = await json(`/api/projects/${pid}/nodes`, { kind: 'volume', parent_id: null, title: '测试卷' });
+  const chapter = await json(`/api/projects/${pid}/nodes`, { kind: 'chapter', parent_id: volume.id, title: '测试章' });
+  const scene = await json(`/api/projects/${pid}/nodes`, { kind: 'scene', parent_id: chapter.id, title: '雨夜来客' });
+  await json(`/api/projects/${pid}/scenes/${scene.id}`, {
+    body: '夜雨敲窗，山门外一片寂静。\n\n“师父，我回来了。”',
+    base_rev: 1,
+  });
+  return project.id;
+}
+
+const testProjectId = await createTestProject();
+console.log(`测试作品：${TEST_PROJECT_TITLE}`);
+
+/** 在新页面里切到测试作品（localStorage 决定默认打开哪个） */
+async function useTestProject(page) {
+  await page.evaluate((id) => localStorage.setItem('writingdesk:projectId', id), testProjectId);
+  await page.reload({ waitUntil: 'networkidle' });
+  await page.waitForTimeout(2200);
+}
+
+/** 测试结束删掉测试作品，不留垃圾（没有删除作品的 API，直接删目录） */
+async function deleteTestProject() {
+  try {
+    const list = await (await fetch(`${BASE}/api/projects`)).json();
+    const target = list.find((p) => p.title === TEST_PROJECT_TITLE);
+    if (!target?.path) return;
+    // 只删自己刚建的那个，防止误删作者的作品
+    if (!target.path.includes(TEST_PROJECT_TITLE)) return;
+    await fs.rm(target.path, { recursive: true, force: true });
+  } catch (err) {
+    console.warn(`清理测试作品失败（可手动删除）：${err.message}`);
+  }
+}
 console.log(`\n写作台 · 移动端端到端\n${'─'.repeat(52)}`);
 
 // ═══════════ 1. 布局 ═══════════
@@ -121,6 +176,7 @@ const pageErrs = [];
 page.on('pageerror', e => pageErrs.push(String(e)));
 await page.goto(BASE, { waitUntil: 'networkidle' });
 await page.waitForTimeout(2000);
+await useTestProject(page);
 
 const drawerState = () => page.evaluate(() => {
   const sh = document.querySelector('.app-shell');
@@ -222,6 +278,7 @@ await check('无 JS 运行时错误', async () => {
 
 await ctx.close();
 await browser.close();
+await deleteTestProject();
 
 console.log(`\n${'─'.repeat(52)}`);
 if (fail === 0) {
