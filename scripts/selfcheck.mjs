@@ -322,6 +322,57 @@ async function main() {
       return '删除 → 回收站 → 恢复';
     });
 
+    await check('新建节点可指定位置（大纲 Enter 新建同级依赖）', async () => {
+      const mk = async (kind, parentId, title, index) => {
+        const body = { kind, parent_id: parentId, title };
+        if (index !== undefined) body.index = index;
+        const r = await fetch(`${BASE}/api/projects/${projectId}/nodes`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        assert(r.ok, `建 ${title} 失败 HTTP ${r.status}`);
+        return r.json();
+      };
+
+      const vol = await mk('volume', null, '插入测试卷');
+      const a = await mk('chapter', vol.id, '甲', 0);
+      await mk('chapter', vol.id, '丙', 1);
+      // 插到中间
+      const b = await mk('chapter', vol.id, '乙', 1);
+
+      const t = await (await fetch(`${BASE}/api/projects/${projectId}/tree`)).json();
+      const order = (parentId) =>
+        t.nodes
+          .filter((n) => n.parent_id === parentId)
+          .sort((x, y) => x.order - y.order)
+          .map((n) => n.title);
+
+      assert(order(vol.id).join('/') === '甲/乙/丙', `顺序错误：${order(vol.id).join('/')}`);
+
+      // 序号应连续（重排真的生效）
+      const orders = t.nodes
+        .filter((n) => n.parent_id === vol.id)
+        .map((n) => n.order)
+        .sort((x, y) => x - y);
+      assert(orders.join(',') === '1,2,3', `序号不连续：${orders.join(',')}`);
+
+      // id 不因重排而改变
+      const fresh = t.nodes.find((n) => n.id === b.id);
+      assert(fresh && fresh.title === '乙', '重排后应按 id 找到原节点');
+      void a;
+
+      // 非法 index 被拒
+      const bad = await fetch(`${BASE}/api/projects/${projectId}/nodes`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ kind: 'chapter', parent_id: vol.id, title: '越界', index: -3 }),
+      });
+      assert(bad.status === 400, `负数 index 应 400，实际 ${bad.status}`);
+
+      return '中间插入、序号连续、id 不变';
+    });
+
     await check('批量删除 → 回收站 → 批量恢复（结构与顺序一致）', async () => {
       // 造一个独立的小结构，避免影响后续检查依赖《雨夜》
       const mk = async (kind, parentId, title) => {

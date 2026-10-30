@@ -139,8 +139,13 @@ export const api = {
   // ─────────── 文档树 ───────────
   getTree: () => get<DocTree>(`${projectPrefix()}/tree`),
 
-  createNode: (input: { kind: DocNode['kind']; parent_id: string | null; title: string }) =>
-    post<DocNode>(`${projectPrefix()}/nodes`, input),
+  createNode: (input: {
+    kind: DocNode['kind'];
+    parent_id: string | null;
+    title: string;
+    /** 插入位置（0 起）；不传则追加到末尾 */
+    index?: number;
+  }) => post<DocNode>(`${projectPrefix()}/nodes`, input),
 
   renameNode: (id: string, title: string) =>
     patch<DocNode>(`${projectPrefix()}/nodes/${encodeURIComponent(id)}`, { title }),

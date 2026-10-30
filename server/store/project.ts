@@ -488,8 +488,11 @@ export class ProjectStore {
     parent_id: string | null;
     title: string;
     status?: DocStatus;
+    /** 插入位置（0 起）。不传则追加到末尾。用于大纲「Enter 新建同级」 */
+    index?: number;
   }): Promise<DocNode> {
     return this.write(async () => {
+      let created: DocNode;
       const title = input.title?.trim() || (input.kind === 'volume' ? '新卷' : input.kind === 'chapter' ? '新章' : '新场景');
       const id = ulid();
       const now = Date.now();
@@ -519,7 +522,7 @@ export class ProjectStore {
             '',
           ),
         );
-        return {
+        created = {
           id,
           kind: 'scene',
           title,
@@ -534,10 +537,9 @@ export class ProjectStore {
           plotlines: [],
           rev: 1,
         };
-      }
-
-      const dir = path.join(parentDir, name);
-      await ensureDir(dir);
+      } else {
+        const dir = path.join(parentDir, name);
+        await ensureDir(dir);
       const metaPath = path.join(dir, META_FILE[input.kind as 'volume' | 'chapter']);
       await writeFileAtomic(
         metaPath,
@@ -546,7 +548,7 @@ export class ProjectStore {
           '',
         ),
       );
-      return {
+      created = {
         id,
         kind: input.kind,
         title,
@@ -556,8 +558,21 @@ export class ProjectStore {
         summary: '',
         word_count: 0,
         updated_at: now,
-        file: path.relative(this.root, metaPath),
-      };
+          file: path.relative(this.root, metaPath),
+        };
+      }
+
+      // 指定了插入位置：先把节点建在末尾，再在同一次写锁内重排。
+      // 为什么不先算好序号直接建：序号是「在现有兄弟中的位置」，
+      // 建之前算一次、建之后再算一次会不一致；先建后排只有一次决策。
+      if (input.index !== undefined && Number.isFinite(input.index)) {
+        const desired = Math.max(1, Math.round(input.index) + 1);
+        await this.renumberSiblings(parentDir, input.kind, id, desired);
+        const fresh = await this.resolveDocFile(id);
+        if (fresh) return fresh.node;
+      }
+
+      return created;
     });
   }
 

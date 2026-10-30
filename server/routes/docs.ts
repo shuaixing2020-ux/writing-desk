@@ -69,10 +69,20 @@ export function registerDocRoutes(app: FastifyInstance, appCtx: AppContextImpl):
     const title = requireString(body.title, 'title', { allowEmpty: true, max: 120 });
     const parentId = body.parent_id === null || body.parent_id === undefined ? null : String(body.parent_id);
 
+    // 可选插入位置（0 起）：大纲「Enter 新建同级」要插在当前行之后，
+    // 不能一律追加到末尾。不传就是追加，与旧行为一致。
+    let index: number | undefined;
+    if (body.index !== undefined && body.index !== null) {
+      const n = requireNumber(body.index, 'index', 0);
+      if (!Number.isFinite(n) || n < 0) throw badRequest('index 必须是非负整数', 'bad_index');
+      index = Math.round(n);
+    }
+
     const node = await ctx.store.createNode({
       kind: kind as Kind,
       parent_id: parentId,
       title: title || (kind === 'volume' ? '新卷' : kind === 'chapter' ? '新章' : '新场景'),
+      index,
     });
 
     await safeSync(ctx);
