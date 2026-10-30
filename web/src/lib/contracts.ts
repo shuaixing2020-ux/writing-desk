@@ -52,11 +52,18 @@ export interface AppActions {
   // 文档
   selectDoc(docId: string): Promise<void>;
   createNode(kind: 'volume' | 'chapter' | 'scene', parentId: string | null, title?: string): Promise<void>;
+  /** 在指定位置新建（0 起）；返回新节点 id，便于调用方聚焦 */
+  createNodeAt(
+    kind: 'volume' | 'chapter' | 'scene',
+    parentId: string | null,
+    title: string,
+    index: number,
+  ): Promise<string | null>;
   renameNode(docId: string, title: string): Promise<void>;
   deleteNode(docId: string): Promise<void>;
   /** 批量删除（含确认、冲刷保存、撤销提示） */
   deleteNodes(ids: string[]): Promise<void>;
-  moveNode(docId: string, parentId: string, order: number): Promise<void>;
+  moveNode(docId: string, parentId: string | null, order: number): Promise<void>;
   updateNodeMeta(
     docId: string,
     patch: Partial<Pick<import('../../../shared/types.ts').DocNode, 'status' | 'summary' | 'pov' | 'time' | 'tags' | 'plotlines'>>,

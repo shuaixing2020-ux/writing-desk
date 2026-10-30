@@ -155,7 +155,7 @@ export const api = {
     patchBody: Partial<Pick<DocNode, 'status' | 'summary' | 'pov' | 'time' | 'tags' | 'plotlines'>>,
   ) => patch<void>(`${projectPrefix()}/nodes/${encodeURIComponent(id)}`, patchBody),
 
-  moveNode: (id: string, input: { parent_id: string; order: number }) =>
+  moveNode: (id: string, input: { parent_id: string | null; order: number }) =>
     post<void>(`${projectPrefix()}/nodes/${encodeURIComponent(id)}/move`, input),
 
   deleteNode: (id: string) => del<void>(`${projectPrefix()}/nodes/${encodeURIComponent(id)}`),

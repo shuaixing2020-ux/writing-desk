@@ -2074,3 +2074,60 @@
   opacity: 0.35;
   cursor: default;
 }
+
+/* ── 大纲逐行编辑（O2） ── */
+
+.p-outline-head-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px var(--sp-3) 1px;
+}
+
+/* 行首类型：卷 / 章 / 场 */
+.p-outline-kind-label {
+  flex: none;
+  width: 15px;
+  text-align: center;
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 0;
+  border-radius: 3px;
+  color: var(--ink-4);
+  background: var(--paper-3);
+}
+.p-outline-kind-label.k-volume {
+  color: var(--accent-ink);
+  background: var(--accent-soft);
+}
+
+/* 标题就是输入框：无边框，聚焦时才显出可编辑 */
+.p-outline-name {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-md);
+  color: var(--ink-1);
+  background: transparent;
+  border: 0;
+  border-radius: 3px;
+  padding: 2px 3px;
+  line-height: 1.5;
+}
+.p-outline-item.d0 > .p-outline-head-row .p-outline-name {
+  font-weight: 600;
+  font-size: var(--fs-base);
+}
+.p-outline-item.d1 > .p-outline-head-row .p-outline-name {
+  font-weight: 500;
+}
+.p-outline-name:hover {
+  background: var(--paper-2);
+}
+.p-outline-name:focus {
+  background: var(--paper-0);
+  box-shadow: inset 0 0 0 1px var(--accent);
+  outline: none;
+}
+.p-outline-item.current > .p-outline-head-row .p-outline-name {
+  color: var(--accent-ink);
+}

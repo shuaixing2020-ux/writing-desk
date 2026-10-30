@@ -638,13 +638,21 @@ export class ProjectStore {
    * 移动节点到新父节点（拖拽排序）。
    * 只支持同层级内移动（场景→章，章→卷），跨层级类型不匹配直接拒绝。
    */
-  async moveNode(docId: string, newParentId: string, newOrder: number): Promise<void> {
+  async moveNode(docId: string, newParentId: string | null, newOrder: number): Promise<void> {
     return this.write(async () => {
       const found = await this.resolveDocFile(docId);
       if (!found || !found.abs) throw new Error(`节点不存在: ${docId}`);
       const node = found.node;
-      if (node.kind === 'volume') throw new Error('卷不支持移动');
 
+      // 卷没有父节点，只能在自己的这一层（manuscript 根）重排顺序。
+      // 大纲里的上移/下移需要它 —— 否则「卷」永远排不了序。
+      if (node.kind === 'volume') {
+        if (newParentId) throw new Error('卷不能移动到其它节点下');
+        await this.renumberSiblings(this.paths.manuscript, 'volume', docId, newOrder);
+        return;
+      }
+
+      if (!newParentId) throw new Error(`${node.kind} 必须指定父节点`);
       const parent = await this.resolveDocFile(newParentId);
       if (!parent || !parent.node.file) throw new Error('目标父节点不存在');
       const expected = node.kind === 'scene' ? 'chapter' : 'volume';

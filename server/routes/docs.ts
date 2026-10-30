@@ -175,7 +175,11 @@ export function registerDocRoutes(app: FastifyInstance, appCtx: AppContextImpl):
     const ctx = await projectOf(appCtx, pid);
     const body = (request.body ?? {}) as Record<string, unknown>;
 
-    const parentId = requireString(body.parent_id, 'parent_id', { max: 200 });
+    // 卷的重排没有父节点（parent_id: null），其余节点必须给父
+    const parentId =
+      body.parent_id === null
+        ? null
+        : requireString(body.parent_id, 'parent_id', { max: 200 });
     const order = Math.max(1, Math.round(requireNumber(body.order, 'order', 1)));
 
     await ctx.store.moveNode(id, parentId, order);

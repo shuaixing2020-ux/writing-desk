@@ -1984,6 +1984,21 @@ async function main(): Promise<void> {
       }
     },
 
+    /**
+     * 在指定位置新建节点（O2 的 Enter 新建同级用）。
+     * 返回新节点 id：调用方拿到后把焦点放到新行的标题输入框。
+     */
+    async createNodeAt(kind, parentId, title, index): Promise<string | null> {
+      try {
+        const node = await api.createNode({ kind, parent_id: parentId, title, index });
+        await actions.refreshTree();
+        return node.id;
+      } catch (err) {
+        toast(`新建失败：${err instanceof Error ? err.message : String(err)}`, 'error');
+        return null;
+      }
+    },
+
     async moveNode(docId, parentId, order): Promise<void> {
       try {
         await api.moveNode(docId, { parent_id: parentId, order });

@@ -713,6 +713,155 @@ async function main() {
       await page.waitForTimeout(600);
     });
 
+    // ─────────── 【6】大纲列表编辑（O2） ───────────
+
+    console.log('\n【6】大纲列表编辑');
+
+    // apiPost 已在【4】声明，这里复用
+
+    // 专用结构，避免影响前面的用例
+    const outVol = await apiPost(`/api/projects/${projectId}/nodes`, {
+      kind: 'volume',
+      parent_id: null,
+      title: '大纲卷',
+    });
+    const outChap = await apiPost(`/api/projects/${projectId}/nodes`, {
+      kind: 'chapter',
+      parent_id: outVol.id,
+      title: '大纲章',
+    });
+    const outScene = await apiPost(`/api/projects/${projectId}/nodes`, {
+      kind: 'scene',
+      parent_id: outChap.id,
+      title: '大纲场',
+    });
+
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(2400);
+    await page.locator('.inspector-tabs button[data-panel="outline"]').click();
+    await page.waitForTimeout(900);
+
+    const outlineValues = () =>
+      page.evaluate(() =>
+        [...document.querySelectorAll('.p-outline-name')].map((i) => i.value),
+      );
+
+    /**
+     * 按标题把焦点放到大纲的某一行。
+     * 不用 locator：行会随重绘整批替换，索引会漂，
+     * 而且在页面内直接 focus 更贴近「作者点进去」这件事。
+     */
+    const focusOutlineRow = (title) =>
+      page.evaluate((t) => {
+        const inputs = [...document.querySelectorAll('.p-outline-name')];
+        const el = inputs.find((i) => i.value === t);
+        if (!el) return false;
+        el.focus();
+        el.select?.();
+        return true;
+      }, title);
+
+    await check('大纲：行首标类型，标题是输入框', async () => {
+      const info = await page.evaluate(() => ({
+        kinds: [...document.querySelectorAll('.p-outline-kind-label')].map((e) => e.textContent),
+        inputs: document.querySelectorAll('.p-outline-name').length,
+      }));
+      assert(info.inputs > 0, '大纲没有渲染出可编辑行');
+      assert(info.kinds.includes('卷') && info.kinds.includes('章') && info.kinds.includes('场'),
+        `行首类型标记不全：${info.kinds.slice(0, 8).join(',')}`);
+    });
+
+    await check('Enter 新建同级并聚焦新行，输入标题后 Enter 继续', async () => {
+      // 点到最后一行（大纲场）的标题输入框
+      const last = page.locator('.p-outline-name').last();
+      await last.click();
+      await page.waitForTimeout(300);
+
+      await page.keyboard.press('Enter');
+      await page.waitForTimeout(1400);
+
+      const afterEnter = await page.evaluate(() => {
+        const inputs = [...document.querySelectorAll('.p-outline-name')];
+        const active = document.activeElement;
+        return {
+          count: inputs.length,
+          focusedId: active?.dataset?.id ?? null,
+          lastId: inputs[inputs.length - 1]?.dataset?.id ?? null,
+        };
+      });
+      assert(
+        afterEnter.focusedId === afterEnter.lastId,
+        `新建后焦点应落在新行：焦点 ${afterEnter.focusedId}，末行 ${afterEnter.lastId}`,
+      );
+
+      // 直接打字应替换默认标题（全选状态）
+      await page.keyboard.type('大纲新场', { delay: 30 });
+      await page.keyboard.press('Enter');
+      await page.waitForTimeout(1500);
+
+      const values = await outlineValues();
+      assert(values.includes('大纲新场'), `标题未写入：${values.join('/')}`);
+    });
+
+    await check('Alt+↑ 调整顺序并刷新保留', async () => {
+      const before = await outlineValues();
+      const idx = before.indexOf('大纲新场');
+      assert(idx > 0, '前置条件：新场应在列表中且不在首位');
+
+      assert(await focusOutlineRow('大纲新场'), '没找到「大纲新场」这一行');
+      await page.waitForTimeout(300);
+      await page.keyboard.press('Alt+ArrowUp');
+      await page.waitForTimeout(1400);
+
+      const after = await outlineValues();
+      assert(
+        after.indexOf('大纲新场') === idx - 1,
+        `上移未生效：${before.join('/')} → ${after.join('/')}`,
+      );
+
+      await page.reload({ waitUntil: 'networkidle' });
+      await page.waitForTimeout(2400);
+      await page.locator('.inspector-tabs button[data-panel="outline"]').click();
+      await page.waitForTimeout(800);
+      const persisted = await outlineValues();
+      assert(persisted.includes('大纲新场'), '刷新后新场标题丢失');
+      assert(
+        persisted.indexOf('大纲新场') === idx - 1,
+        `刷新后顺序变了：${persisted.join('/')}`,
+      );
+    });
+
+    await check('空标题 Backspace 删除并撤销', async () => {
+      const before = (await outlineValues()).length;
+      // 找到「大纲新场」并清空标题
+      assert(await focusOutlineRow('大纲新场'), '没找到「大纲新场」这一行');
+      await page.waitForTimeout(300);
+      await page.keyboard.press('ControlOrMeta+a');
+      await page.keyboard.press('Backspace');
+      await page.waitForTimeout(500);
+      await page.keyboard.press('Backspace');
+      await page.waitForTimeout(1600);
+
+      const after = (await outlineValues()).length;
+      assert(after === before - 1, `删除未生效：${before} → ${after}`);
+
+      const undo = await page.locator('.toast-action').count();
+      assert(undo === 1, '删除后应有撤销入口');
+      await page.locator('.toast-action').click();
+      await page.waitForTimeout(1800);
+      assert((await outlineValues()).length === before, '撤销后行数应恢复');
+    });
+
+    await check('点击大纲行同步到左侧目录（选中状态共享）', async () => {
+      assert(await focusOutlineRow('大纲章'), '没找到「大纲章」这一行');
+      await page.waitForTimeout(1400);
+
+      const current = await page.evaluate(
+        () => document.querySelector('.tree-row.current .tree-title')?.textContent ?? '',
+      );
+      assertEq(current, '大纲章', '左侧目录的当前项应同步为「大纲章」');
+    });
+
     await check('无未捕获的运行时错误', async () => {
       // 过滤掉网络类噪音（服务端某些路由可能还在开发）
       const real = consoleErrors.filter(
