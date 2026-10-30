@@ -10,12 +10,18 @@ import type { api } from './api.ts';
 
 export type ToastKind = 'ok' | 'warn' | 'error' | 'info';
 
+/** toast 上的动作按钮（如「撤销」） */
+export interface ToastAction {
+  label: string;
+  onClick: () => void;
+}
+
 export interface PanelContext {
   store: Store;
   api: typeof api;
   actions: AppActions;
   /** 弹提示 */
-  toast(message: string, kind?: ToastKind): void;
+  toast(message: string, kind?: ToastKind, ms?: number, action?: ToastAction): void;
   /** 打开模态框 */
   openOverlay(kind: string, payload?: unknown): void;
   closeOverlay(): void;
@@ -48,6 +54,8 @@ export interface AppActions {
   createNode(kind: 'volume' | 'chapter' | 'scene', parentId: string | null, title?: string): Promise<void>;
   renameNode(docId: string, title: string): Promise<void>;
   deleteNode(docId: string): Promise<void>;
+  /** 批量删除（含确认、冲刷保存、撤销提示） */
+  deleteNodes(ids: string[]): Promise<void>;
   moveNode(docId: string, parentId: string, order: number): Promise<void>;
   updateNodeMeta(
     docId: string,
@@ -99,5 +107,5 @@ export interface AppActions {
   // 弹层
   openOverlay(kind: string, payload?: unknown): void;
   closeOverlay(): void;
-  toast(message: string, kind?: ToastKind): void;
+  toast(message: string, kind?: ToastKind, ms?: number, action?: ToastAction): void;
 }

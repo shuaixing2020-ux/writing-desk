@@ -32,10 +32,17 @@ import { buildMobileNav, isMobileViewport, MobileShell } from './components/mobi
 import { createTree, type TreeHandle } from './components/tree.ts';
 import { GraphView } from './components/graph/graph-view.ts';
 import { api, ApiClientError, connectEvents, draftCache, setActiveProject } from './lib/api.ts';
-import type { AppActions, PanelContext, PanelInstance } from './lib/contracts.ts';
+import type { AppActions, PanelContext, PanelInstance, ToastAction } from './lib/contracts.ts';
+import {
+  dedupeNested,
+  describeDeleteSummary,
+  needsConfirm,
+  nextSelectionAfterDelete,
+  type DeleteTarget,
+} from './lib/delete-policy.ts';
 import { fmtNum, h, mount, rafThrottle } from './lib/dom.ts';
 import type { AppState, EditorSettings, RightPanelKind, SaveState, Store as StoreType } from './lib/store.ts';
-import { childrenOf, DEFAULT_EDITOR_SETTINGS, nodeById, pathText, Store } from './lib/store.ts';
+import { childrenOf, DEFAULT_EDITOR_SETTINGS, nodeById, pathText, Store, visibleNodes} from './lib/store.ts';
 import { countWords } from './lib/words.ts';
 
 // ─────────────────────── 本地存储键 ───────────────────────
@@ -230,6 +237,7 @@ async function main(): Promise<void> {
     createNode: (kind, parentId, title) => void actions.createNode(kind, parentId, title),
     renameNode: (id, title) => void actions.renameNode(id, title),
     deleteNode: (id) => void actions.deleteNode(id),
+    deleteNodes: (ids) => void actions.deleteNodes(ids),
     moveNode: (id, parentId, order) => void actions.moveNode(id, parentId, order),
     updateNodeMeta: (id, patch) => void actions.updateNodeMeta(id, patch),
     toggleCollapse: (id) => {
@@ -923,12 +931,16 @@ async function main(): Promise<void> {
     message: string,
     kind: 'ok' | 'warn' | 'error' | 'info' = 'info',
     ms?: number,
+    action?: ToastAction,
   ): void {
-    // 同一条提示 3 秒内只弹一次：保存重试失败时不该刷屏盖住正文
-    const now = Date.now();
-    if (message === lastToast.message && now - lastToast.at < 3000) return;
-    lastToast = { message, at: now };
-    overlays.toast(message, kind, ms);
+    // 同一条提示 3 秒内只弹一次：保存重试失败时不该刷屏盖住正文。
+    // 带动作按钮的（撤销）不去重 —— 连删两次要能看到两个撤销入口。
+    if (!action) {
+      const now = Date.now();
+      if (message === lastToast.message && now - lastToast.at < 3000) return;
+      lastToast = { message, at: now };
+    }
+    overlays.toast(message, kind, ms, action);
   }
 
   // ─────────────────────── 作品 ───────────────────────
@@ -1816,6 +1828,125 @@ async function main(): Promise<void> {
           }
         }
         toast('已移入回收站', 'ok');
+      } catch (err) {
+        toast(`删除失败：${err instanceof Error ? err.message : String(err)}`, 'error');
+      }
+    },
+
+    /**
+     * 批量删除（C2 的编排点）。
+     *
+     * 顺序有讲究：
+     *   1. 先算「要不要确认」——空章节不打扰作者
+     *   2. 冲刷未保存正文，失败就中止（不能把没存的新内容连同文件一起移走）
+     *   3. 调接口，成功后给 8 秒撤销入口
+     *   4. 选中项与编辑器跟随到相邻文档
+     */
+    async deleteNodes(ids): Promise<void> {
+      const nodes = store.state.nodes;
+      const byId = new Map(nodes.map((n) => [n.id, n]));
+      const existing = ids.filter((id) => byId.has(id));
+      if (existing.length === 0) return;
+
+      const outermost = dedupeNested(existing, (id) => byId.get(id)?.parent_id ?? null);
+
+      // 收集每个目标的统计（含后代）
+      const collectDescendants = (rootId: string): typeof nodes => {
+        const out: typeof nodes = [];
+        const walk = (id: string): void => {
+          for (const n of nodes.filter((x) => x.parent_id === id)) {
+            out.push(n);
+            walk(n.id);
+          }
+        };
+        walk(rootId);
+        return out;
+      };
+
+      const targets: DeleteTarget[] = outermost.map((id) => {
+        const node = byId.get(id)!;
+        const desc = collectDescendants(id);
+        return {
+          id,
+          kind: node.kind,
+          status: node.status,
+          words: node.kind === 'scene' ? node.word_count : 0,
+          descendants: desc.length,
+          descendantWords: desc.reduce((n, d) => n + (d.kind === 'scene' ? d.word_count : 0), 0),
+        };
+      });
+
+      if (needsConfirm(targets)) {
+        const summary = describeDeleteSummary(targets);
+        const ok = await overlays.confirm({
+          title: summary.count > 1 ? `删除选中的 ${summary.count} 项？` : '删除这一项？',
+          message:
+            (summary.descendants > 0 ? `含 ${summary.descendants} 个下级，` : '') +
+            `共 ${fmtNum(summary.words)} 字。将移入回收站，30 天内可恢复。`,
+          confirmText: '移入回收站',
+          danger: true,
+        });
+        if (!ok) return;
+      }
+
+      // 冲刷未保存正文：删一个正被编辑的场景时，先把作者刚打的字落盘
+      try {
+        await saveNow();
+      } catch (err) {
+        toast(`保存失败，已取消删除：${err instanceof Error ? err.message : String(err)}`, 'error');
+        return;
+      }
+
+      // 记录删除前状态，用于删后选中与编辑器跟随
+      const orderBefore = visibleNodes(store.state).map((r) => r.node.id);
+      const currentBefore = store.state.currentDocId;
+      const deletedSet = new Set<string>();
+      for (const id of outermost) {
+        deletedSet.add(id);
+        for (const d of collectDescendants(id)) deletedSet.add(d.id);
+      }
+
+      try {
+        const res = await api.deleteNodes(outermost);
+        await actions.refreshTree();
+        void actions.refreshTrash().catch(() => {});
+
+        // 选中与编辑器跟随到相邻文档
+        const next = nextSelectionAfterDelete(orderBefore, deletedSet, currentBefore);
+        if (currentBefore && deletedSet.has(currentBefore)) {
+          if (next) {
+            await selectDoc(next);
+          } else {
+            store.set({ currentDocId: null, scene: null });
+            editor.setContext({
+              projectId: store.state.projectId ?? '',
+              doc: null,
+              path: '',
+              countMode: 'hanzi',
+            });
+          }
+        }
+        if (next) tree?.focusRow(next);
+
+        // 8 秒撤销入口（U4：任何删除都必须可恢复）
+        toast(`已删除 ${res.deleted} 项`, 'ok', 8000, {
+          label: '撤销',
+          onClick: () => {
+            void (async () => {
+              try {
+                await api.restoreTrashBatch(res.items.map((i) => i.trash_id));
+                await actions.refreshTree();
+                void actions.refreshTrash().catch(() => {});
+                toast('已恢复', 'ok');
+              } catch (err) {
+                toast(
+                  `撤销失败：${err instanceof Error ? err.message : String(err)}，可到回收站手动恢复`,
+                  'error',
+                );
+              }
+            })();
+          },
+        });
       } catch (err) {
         toast(`删除失败：${err instanceof Error ? err.message : String(err)}`, 'error');
       }

@@ -7,7 +7,7 @@
 
 import type { ProjectSummary } from '../../../shared/types.ts';
 import { WORK_MODE_LABELS } from '../../../shared/types.ts';
-import type { ToastKind } from '../lib/contracts.ts';
+import type { ToastAction, ToastKind } from '../lib/contracts.ts';
 import { fmtNum, h, mount, relativeTime } from '../lib/dom.ts';
 import { ICONS } from './shell.ts';
 
@@ -80,7 +80,7 @@ export interface OpenModalOptions {
 }
 
 export interface Overlays {
-  toast(message: string, kind?: ToastKind, ms?: number): void;
+  toast(message: string, kind?: ToastKind, ms?: number, action?: ToastAction): void;
   confirm(opts: ConfirmOptions): Promise<boolean>;
   prompt(opts: PromptOptions): Promise<string | null>;
   commandPalette(opts: CommandPaletteOptions): void;
@@ -132,7 +132,12 @@ export function createOverlays(opts: { modalRoot: HTMLElement; toastWrap: HTMLEl
 
   // ─────────────── toast ───────────────
 
-  const toast = (message: string, kind: ToastKind = 'info', ms = 2800): void => {
+  const toast = (
+    message: string,
+    kind: ToastKind = 'info',
+    ms = 2800,
+    action?: ToastAction,
+  ): void => {
     const iconMap: Record<ToastKind, string> = {
       ok: ICONS.checkCircle,
       warn: ICONS.alert,
@@ -141,9 +146,26 @@ export function createOverlays(opts: { modalRoot: HTMLElement; toastWrap: HTMLEl
     };
     const el = h(
       'div',
-      { class: `toast ${kind}` },
+      { class: `toast ${kind}${action ? ' has-action' : ''}` },
       h('span', { class: 'toast-icon', html: iconMap[kind] }),
       h('span', { class: 'toast-msg' }, message),
+      action
+        ? h(
+            'button',
+            {
+              class: 'toast-action',
+              type: 'button',
+              onclick: (ev: MouseEvent) => {
+                // 点按钮不能同时触发「点提示关闭」
+                ev.stopPropagation();
+                clearTimeout(timer);
+                leave();
+                action.onClick();
+              },
+            },
+            action.label,
+          )
+        : null,
     );
     opts.toastWrap.appendChild(el);
     const leave = (): void => {

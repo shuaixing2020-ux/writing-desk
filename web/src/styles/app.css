@@ -1720,3 +1720,63 @@ button.st-item:hover {
   stroke: var(--accent);
   stroke-width: 2;
 }
+
+/* ── 多选与快捷删除（C2） ── */
+
+/* 选中态与「当前文档」是两件事：当前是正在写的，选中是待批量操作的。
+   只点一下时两者重合，所以多选时用更明显的描边区分。 */
+.tree-row.selected:not(.current) {
+  background: var(--paper-4);
+}
+.tree-row.selected:not(.current) .tree-title {
+  color: var(--ink-1);
+  font-weight: 600;
+}
+/* 整体有多个选中项时，给一个统一的左边条，避免只能靠背景深浅猜 */
+.tree-row.selected {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+/* 悬停出现的「删除」文字按钮 */
+.tree-del {
+  display: none;
+  flex: none;
+  font-size: var(--fs-xs);
+  line-height: 1;
+  color: var(--ink-4);
+  padding: 3px 5px;
+  border-radius: 3px;
+  transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+}
+.tree-row:hover .tree-del {
+  display: block;
+}
+.tree-del:hover {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+/* 行内按钮多了以后，标题要让位 */
+.tree-row .tree-title {
+  min-width: 0;
+  flex: 1;
+}
+
+/* toast 上的动作按钮（撤销） */
+.toast-action {
+  flex: none;
+  margin-left: var(--sp-2);
+  padding: 2px var(--sp-2);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--accent-ink);
+  border-radius: var(--r-sm);
+  background: var(--accent-soft);
+}
+.toast-action:hover {
+  background: var(--accent-soft);
+  text-decoration: underline;
+}
+.toast.has-action {
+  cursor: default;
+}

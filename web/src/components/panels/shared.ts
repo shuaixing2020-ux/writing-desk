@@ -9,7 +9,7 @@
  *   - 面板根节点固定 class="panel"，子结构为 header / body / footer。
  */
 
-import type { PanelContext, ToastKind } from '../../lib/contracts.ts';
+import type { ToastAction, PanelContext, ToastKind } from '../../lib/contracts.ts';
 import { h, mount } from '../../lib/dom.ts';
 
 // ─────────────────────────── 图标 ───────────────────────────
@@ -411,9 +411,14 @@ export function confirmDanger(
 }
 
 /** 简易提示：统一走 ctx.toast，异常时静默（提示失败不该再抛错） */
-export function toast(ctx: PanelContext, message: string, kind: ToastKind = 'info'): void {
+export function toast(
+  ctx: PanelContext,
+  message: string,
+  kind: ToastKind = 'info',
+  opts?: { ms?: number; action?: ToastAction },
+): void {
   try {
-    ctx.toast(message, kind);
+    ctx.toast(message, kind, opts?.ms, opts?.action);
   } catch {
     /* ignore */
   }

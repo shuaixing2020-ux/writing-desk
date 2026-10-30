@@ -20,6 +20,8 @@ export interface TreeHandlers {
   createNode(kind: 'volume' | 'chapter' | 'scene', parentId: string | null, title?: string): void;
   renameNode(docId: string, title: string): void;
   deleteNode(docId: string): void;
+  /** 批量删除（含确认、冲刷、撤销提示，由 app 层编排） */
+  deleteNodes(ids: string[]): void;
   moveNode(docId: string, parentId: string, order: number): void;
   updateNodeMeta(docId: string, patch: Partial<Pick<DocNode, 'status' | 'summary'>>): void;
   toggleCollapse(docId: string): void;
@@ -30,6 +32,10 @@ export interface TreeHandle {
   /** 挂载到侧栏头部的新建按钮区域 */
   mountHeadActions(container: HTMLElement): void;
   update(state: AppState): void;
+  /** 把键盘焦点移到某一行（删除后跟随选中项） */
+  focusRow(docId: string): void;
+  /** 当前选中的 id（若没有多选，返回当前文档） */
+  selectedIds(): string[];
   destroy(): void;
 }
 
@@ -51,6 +57,55 @@ export function createTree(container: HTMLElement, handlers: TreeHandlers): Tree
   let menuEl: HTMLElement | null = null;
   let headActionsEl: HTMLElement | null = null;
 
+  /**
+   * 多选集合。与「当前文档」是两个概念：
+   *   当前文档 = 编辑器里正在写的那个（单选，决定右侧面板与正文）
+   *   选中集合 = 待批量操作的那些（可多个，含当前文档）
+   * 作者只点一下时两者一致，多选时编辑器不动，避免每点一次就跳正文。
+   */
+  let selection = new Set<string>();
+  /** Shift 范围选择的锚点 */
+  let anchorId: string | null = null;
+  /** 重绘后要恢复键盘焦点的节点（U3：结构操作后焦点回到被操作处） */
+  let pendingFocusId: string | null = null;
+
+  /** 实际生效的选中集合：没多选时就是当前文档 */
+  const effectiveSelection = (): Set<string> => {
+    if (selection.size > 0) return selection;
+    const cur = state?.currentDocId;
+    return new Set(cur ? [cur] : []);
+  };
+
+  const visibleOrder = (): string[] =>
+    state ? visibleNodes(state).map((r) => r.node.id) : [];
+
+  const applySelection = (ids: string[], anchor?: string | null): void => {
+    selection = new Set(ids);
+    anchorId = anchor === undefined ? (ids[ids.length - 1] ?? null) : anchor;
+  };
+
+  /** Shift 范围选择：用目录的显示顺序，含两端 */
+  const selectRangeTo = (targetId: string): void => {
+    const order = visibleOrder();
+    const to = order.indexOf(targetId);
+    const from = anchorId ? order.indexOf(anchorId) : -1;
+    if (to === -1) return;
+    if (from === -1) {
+      applySelection([targetId], targetId);
+      return;
+    }
+    const [lo, hi] = from <= to ? [from, to] : [to, from];
+    applySelection(order.slice(lo, hi + 1), anchorId);
+  };
+
+  /** 请求删除一组节点（真正的确认与落盘在 app 层） */
+  const requestDelete = (ids: string[]): void => {
+    const unique = [...new Set(ids)].filter(Boolean);
+    if (unique.length === 0) return;
+    closeMenu();
+    handlers.deleteNodes(unique);
+  };
+
   // ─────────────── 上下文菜单 ───────────────
 
   const closeMenu = (): void => {
@@ -70,7 +125,7 @@ export function createTree(container: HTMLElement, handlers: TreeHandlers): Tree
           { kind: 'item', label: '新建章', icon: ICONS.folder, run: () => handlers.createNode('chapter', node.id) },
           sep,
           { kind: 'item', label: '重命名', icon: ICONS.pencil, run: () => startRename(node.id) },
-          { kind: 'item', label: '删除卷', icon: ICONS.trash, danger: true, run: () => handlers.deleteNode(node.id) },
+          { kind: 'item', label: '删除卷', icon: ICONS.trash, danger: true, run: () => requestDelete([node.id]) },
         );
       } else if (node.kind === 'chapter') {
         items.push(
@@ -78,13 +133,28 @@ export function createTree(container: HTMLElement, handlers: TreeHandlers): Tree
           { kind: 'item', label: '在下方新建章', icon: ICONS.folder, run: () => handlers.createNode('chapter', node.parent_id) },
           sep,
           { kind: 'item', label: '重命名', icon: ICONS.pencil, run: () => startRename(node.id) },
-          { kind: 'item', label: '删除章', icon: ICONS.trash, danger: true, run: () => handlers.deleteNode(node.id) },
+          { kind: 'item', label: '删除章', icon: ICONS.trash, danger: true, run: () => requestDelete([node.id]) },
         );
       } else {
         items.push(
           { kind: 'item', label: '重命名', icon: ICONS.pencil, run: () => startRename(node.id) },
           { kind: 'item', label: '在下方新建场景', icon: ICONS.plus, run: () => handlers.createNode('scene', node.parent_id) },
+          sep,
+          { kind: 'item', label: '删除场景', icon: ICONS.trash, danger: true, run: () => requestDelete([node.id]) },
         );
+      }
+
+      // 多选时右键：一次删掉全部选中项
+      const ctxSel = effectiveSelection();
+      if (ctxSel.size > 1 && ctxSel.has(node.id)) {
+        items.push(sep);
+        items.push({
+          kind: 'item',
+          label: `删除选中的 ${ctxSel.size} 项`,
+          icon: ICONS.trash,
+          danger: true,
+          run: () => requestDelete([...ctxSel]),
+        });
       }
 
       items.push(sep);
@@ -269,8 +339,15 @@ export function createTree(container: HTMLElement, handlers: TreeHandlers): Tree
       return;
     }
 
+    // 选择集合里可能有已被删除/移动的 id，先剪掉，避免脏数据影响批量操作
+    const alive = new Set(rows.map((r) => r.node.id));
+    for (const id of [...selection]) if (!alive.has(id)) selection.delete(id);
+    if (anchorId && !alive.has(anchorId)) anchorId = null;
+    const selectedSet = effectiveSelection();
+
     for (const { node, depth } of rows) {
       const isCur = node.id === state.currentDocId;
+      const isSelected = selectedSet.has(node.id);
       const isContainer = node.kind !== 'scene';
       const collapsed = state.collapsed.has(node.id);
       const childCount = isContainer ? childrenOf(state, node.id).length : 0;
@@ -281,12 +358,13 @@ export function createTree(container: HTMLElement, handlers: TreeHandlers): Tree
           'tree-row',
           `kind-${node.kind}`,
           isCur ? 'current' : '',
+          isSelected ? 'selected' : '',
           collapsed ? 'collapsed' : '',
         ]
           .filter(Boolean)
           .join(' '),
         role: 'treeitem',
-        'aria-selected': isCur ? 'true' : 'false',
+        'aria-selected': isSelected ? 'true' : 'false',
         'aria-expanded': isContainer ? String(!collapsed) : null,
         tabIndex: isCur ? 0 : -1,
         dataset: { id: node.id, kind: node.kind, depth: String(depth) },
@@ -366,11 +444,50 @@ export function createTree(container: HTMLElement, handlers: TreeHandlers): Tree
         );
       }
 
-      // 点击选择
+      // 悬停出现的文字按钮「删除」
+      if (!isEditing) {
+        row.append(
+          h(
+            'button',
+            {
+              class: 'tree-del',
+              type: 'button',
+              title: '删除（Delete）',
+              onclick: (ev: MouseEvent) => {
+                ev.stopPropagation();
+                requestDelete([node.id]);
+              },
+            },
+            '删除',
+          ),
+        );
+      }
+
+      // 点击选择：单击=单选并切换正文；Ctrl/Cmd=切换该项；Shift=范围
       row.addEventListener('click', (ev) => {
         if (isEditing) return;
-        if ((ev.target as HTMLElement).closest('.tree-twisty, .tree-add')) return;
+        if ((ev.target as HTMLElement).closest('.tree-twisty, .tree-add, .tree-del')) return;
+
+        if (ev.shiftKey) {
+          ev.preventDefault();
+          selectRangeTo(node.id);
+          paint();
+          return;
+        }
+        if (ev.ctrlKey || ev.metaKey) {
+          ev.preventDefault();
+          if (selection.has(node.id)) selection.delete(node.id);
+          else selection.add(node.id);
+          anchorId = node.id;
+          // 多选不切换正文：作者在挑要删的项，不该每次都跳编辑区
+          if (selection.size === 0) handlers.selectDoc(node.id);
+          paint();
+          return;
+        }
+
+        applySelection([node.id], node.id);
         handlers.selectDoc(node.id);
+        paint();
       });
       row.addEventListener('dblclick', (ev) => {
         ev.preventDefault();
@@ -379,6 +496,11 @@ export function createTree(container: HTMLElement, handlers: TreeHandlers): Tree
       row.addEventListener('contextmenu', (ev) => {
         ev.preventDefault();
         ev.stopPropagation();
+        // 右键落在未选中的项上时，选中集合收敛为这一项（与系统文件管理器一致）
+        if (!effectiveSelection().has(node.id)) {
+          applySelection([node.id], node.id);
+          paint();
+        }
         if (!isCur) handlers.selectDoc(node.id);
         openMenu(ev, node);
       });
@@ -448,7 +570,35 @@ export function createTree(container: HTMLElement, handlers: TreeHandlers): Tree
 
     // 空白区域：右键出新建菜单，点击取消选中态焦点
     container.scrollTop = scrollTop;
+
+    // 重绘后把键盘焦点还给要操作的节点（U3）
+    if (pendingFocusId) {
+      const id = pendingFocusId;
+      pendingFocusId = null;
+      const el = list.querySelector<HTMLElement>(`.tree-row[data-id="${CSS.escape(id)}"]`);
+      el?.focus();
+    }
   };
+
+  // 键盘等价操作（U3）：焦点在目录里时 Delete / Backspace 删除所选
+  list.addEventListener('keydown', (ev: KeyboardEvent) => {
+    const target = ev.target as HTMLElement;
+    if (target.closest('input, textarea')) return; // 重命名输入框里不拦
+
+    if (ev.key === 'Delete' || ev.key === 'Backspace') {
+      const ids = [...effectiveSelection()];
+      if (ids.length === 0) return;
+      ev.preventDefault(); // Backspace 不能触发浏览器后退
+      requestDelete(ids);
+      return;
+    }
+    if (ev.key === 'Escape' && selection.size > 0) {
+      ev.preventDefault();
+      selection.clear();
+      anchorId = null;
+      paint();
+    }
+  });
 
   list.addEventListener('contextmenu', (ev) => {
     if ((ev.target as HTMLElement).closest('.tree-row')) return;
@@ -500,8 +650,18 @@ export function createTree(container: HTMLElement, handlers: TreeHandlers): Tree
     mountHeadActions,
     update: (next: AppState) => {
       state = next;
+      // 当前文档变了而作者没多选时，选中集合跟随它，避免悬浮在别处
+      if (selection.size === 0 && next.currentDocId) {
+        selection = new Set([next.currentDocId]);
+        anchorId = next.currentDocId;
+      }
       paint();
     },
+    focusRow: (docId: string) => {
+      pendingFocusId = docId;
+      paint();
+    },
+    selectedIds: () => [...effectiveSelection()],
     destroy: () => {
       closeMenu();
       document.removeEventListener('mousedown', onDocPointerDown, true);

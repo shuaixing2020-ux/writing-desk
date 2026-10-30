@@ -480,6 +480,144 @@ async function main() {
       await page.waitForTimeout(800);
     });
 
+    // ─────────── 【4】章节快捷删除（C2） ───────────
+
+    console.log('\n【4】章节快捷删除');
+
+    // 造一组专用节点，避免影响前面用例依赖的「雨夜」。
+    // 注意：上面 API 段里的 post 是块级作用域，这里要自带一个。
+    const apiPost = async (url, body) => {
+      const r = await fetch(`${BASE}${url}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      assert(r.ok, `POST ${url} → HTTP ${r.status}`);
+      return r.json();
+    };
+
+    const delVolume = await apiPost(`/api/projects/${projectId}/nodes`, {
+      kind: 'volume',
+      parent_id: null,
+      title: '删除测试卷',
+    });
+    const delChapter = await apiPost(`/api/projects/${projectId}/nodes`, {
+      kind: 'chapter',
+      parent_id: delVolume.id,
+      title: '删除测试章',
+    });
+    const mkScene = async (title) =>
+      apiPost(`/api/projects/${projectId}/nodes`, {
+        kind: 'scene',
+        parent_id: delChapter.id,
+        title,
+      });
+    const emptyScene = await mkScene('空场景');
+    const filledScene = await mkScene('有字场景');
+    await fetch(`${BASE}/api/projects/${projectId}/scenes/${filledScene.id}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ body: '这段正文用于触发删除确认框。' }),
+    });
+
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(2200);
+
+    const rowByTitle = (title) => page.locator('.tree-row', { hasText: title }).first();
+    const treeTitles = () =>
+      page.evaluate(() =>
+        [...document.querySelectorAll('.tree-row')].map(
+          (r) => r.querySelector('.tree-title')?.textContent ?? '',
+        ),
+      );
+
+    await check('删空场景：不弹确认，出现撤销入口，撤销后回到原位', async () => {
+      const before = await treeTitles();
+      const row = rowByTitle('空场景');
+      await row.hover();
+      await row.locator('.tree-del').click();
+      await page.waitForTimeout(1200);
+
+      assert(
+        (await page.locator('.modal').count()) === 0,
+        '删除空场景不应弹确认框（作者在清理，不该被拦）',
+      );
+      assert((await page.locator('.toast-action').count()) === 1, '缺少撤销入口');
+
+      await page.locator('.toast-action').click();
+      await page.waitForTimeout(1600);
+      assertEq((await treeTitles()).join('|'), before.join('|'), '撤销后顺序应与删除前一致');
+    });
+
+    await check('删有字场景：弹确认，Esc 取消后无变化', async () => {
+      const before = await treeTitles();
+      const row = rowByTitle('有字场景');
+      await row.hover();
+      await row.locator('.tree-del').click();
+      await page.waitForTimeout(700);
+
+      const modal = await page.locator('.modal').count();
+      assert(modal === 1, '删除有字场景应弹确认框');
+      const text = await page.locator('.modal').innerText();
+      assert(/移入回收站/.test(text) && /可恢复/.test(text), `确认文案缺关键信息：${text}`);
+
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(600);
+      assertEq((await treeTitles()).join('|'), before.join('|'), 'Esc 取消后不应有任何变化');
+    });
+
+    await check('Cmd/Ctrl 多选两章删除，再撤销', async () => {
+      await rowByTitle('空场景').click();
+      await page.waitForTimeout(300);
+      await rowByTitle('有字场景').click({ modifiers: ['ControlOrMeta'] });
+      await page.waitForTimeout(500);
+
+      const selected = await page.locator('.tree-row.selected').count();
+      assert(selected === 2, `应选中 2 项，实际 ${selected}`);
+
+      await page.locator('.tree-row.selected').first().focus();
+      await page.keyboard.press('Delete');
+      await page.waitForTimeout(800);
+      assert((await page.locator('.modal').count()) === 1, '批量删除有字场景应弹确认');
+      await page.locator('.modal button', { hasText: '移入回收站' }).click();
+      await page.waitForTimeout(1800);
+
+      const afterDelete = await treeTitles();
+      assert(!afterDelete.includes('空场景') && !afterDelete.includes('有字场景'), '两项都应被删');
+
+      await page.locator('.toast-action').click();
+      await page.waitForTimeout(1800);
+      const afterUndo = await treeTitles();
+      assert(afterUndo.includes('空场景') && afterUndo.includes('有字场景'), '撤销后两项都应恢复');
+    });
+
+    await check('删除正在编辑的场景后，编辑器切到相邻场景', async () => {
+      // 先切到要删的场景，让编辑器持有它
+      await rowByTitle('空场景').click();
+      await page.waitForTimeout(900);
+      const editing = await page.evaluate(
+        () => document.querySelector('.tree-row.current .tree-title')?.textContent ?? '',
+      );
+      assert(editing === '空场景', `前置条件失败：当前编辑的是「${editing}」`);
+
+      const row = rowByTitle('空场景');
+      await row.hover();
+      await row.locator('.tree-del').click();
+      await page.waitForTimeout(1500);
+
+      const nowEditing = await page.evaluate(
+        () => document.querySelector('.tree-row.current .tree-title')?.textContent ?? '',
+      );
+      assert(nowEditing !== '空场景', '被删的场景不应仍是当前文档');
+      assert(nowEditing.length > 0, '应切到相邻场景，而不是空状态');
+
+      // 撤销，把项目恢复原样，避免影响后续检查
+      if ((await page.locator('.toast-action').count()) > 0) {
+        await page.locator('.toast-action').click();
+        await page.waitForTimeout(1500);
+      }
+    });
+
     await check('无未捕获的运行时错误', async () => {
       // 过滤掉网络类噪音（服务端某些路由可能还在开发）
       const real = consoleErrors.filter(

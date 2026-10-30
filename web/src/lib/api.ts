@@ -17,6 +17,8 @@ import type {
   AiStatus,
   BackupTarget,
   DailyStat,
+  BatchDeleteResponse,
+  BatchRestoreResponse,
   DocNode,
   DocTree,
   Entity,
@@ -152,6 +154,14 @@ export const api = {
     post<void>(`${projectPrefix()}/nodes/${encodeURIComponent(id)}/move`, input),
 
   deleteNode: (id: string) => del<void>(`${projectPrefix()}/nodes/${encodeURIComponent(id)}`),
+
+  /** 批量删除（进回收站）；返回每项的 trash_id，撤销时用它恢复 */
+  deleteNodes: (ids: string[]) =>
+    post<BatchDeleteResponse>(`${projectPrefix()}/nodes/delete`, { ids }),
+
+  /** 批量恢复（撤销删除用） */
+  restoreTrashBatch: (ids: string[]) =>
+    post<BatchRestoreResponse>(`${projectPrefix()}/trash/restore-batch`, { ids }),
 
   // ─────────── 正文 ───────────
   getScene: (id: string) => get<SceneContent>(`${projectPrefix()}/scenes/${encodeURIComponent(id)}`),
