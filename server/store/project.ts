@@ -713,8 +713,13 @@ export class ProjectStore {
     }
   }
 
-  /** 删除节点到回收站（返回被删节点列表） */
-  async deleteNode(docId: string): Promise<DocNode[]> {
+  /**
+   * 删除节点到回收站，返回回收站条目 id 与被删节点列表。
+   *
+   * 为什么要把 trashId 返回出来：前端「撤销」必须知道去哪个目录恢复。
+   * 旧接口只返回被删节点，撤销时无从下手（D0 的 Q6 结论）。
+   */
+  async deleteNodeToTrash(docId: string): Promise<{ trashId: string; nodes: DocNode[] }> {
     return this.write(async () => {
       const tree = await this.readTree();
       const node = tree.nodes.find((n) => n.id === docId);
@@ -733,7 +738,8 @@ export class ProjectStore {
       }
 
       const abs = path.join(this.root, node.file);
-      const destDir = path.join(this.paths.trash, `${Date.now()}-${docId}`);
+      const trashId = `${Date.now()}-${docId}`;
+      const destDir = path.join(this.paths.trash, trashId);
       await ensureDir(destDir);
 
       // 恢复必须回到原来的父目录，否则章会被丢到 manuscript 根下变成孤立目录，
@@ -753,8 +759,18 @@ export class ProjectStore {
         nodes: doomed,
       });
 
-      return doomed;
+      return { trashId, nodes: doomed };
     });
+  }
+
+  /**
+   * 删除节点到回收站（返回被删节点列表）。
+   *
+   * 对外行为保持不变：旧的 DELETE /nodes/:id 与既有测试都依赖这个签名。
+   */
+  async deleteNode(docId: string): Promise<DocNode[]> {
+    const { nodes } = await this.deleteNodeToTrash(docId);
+    return nodes;
   }
 
   /** 从回收站恢复（回到原父目录；父目录已不存在时退回 manuscript 根） */

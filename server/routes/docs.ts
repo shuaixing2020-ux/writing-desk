@@ -15,6 +15,8 @@
 
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import type {
+  BatchDeleteItem,
+  BatchDeleteResponse,
   DocNode,
   DocStatus,
   DocTree,
@@ -36,7 +38,9 @@ import {
   requireNumber,
   requireString,
   syncTreeToIndex,
+  withTreeLock,
 } from './shared.ts';
+import { collectSubtree, orderForDeletion, pickOutermostIds } from '../util/node-select.ts';
 
 const NODE_KINDS = ['volume', 'chapter', 'scene'] as const;
 type Kind = (typeof NODE_KINDS)[number];
@@ -219,6 +223,124 @@ export function registerDocRoutes(app: FastifyInstance, appCtx: AppContextImpl):
     await safeSync(ctx);
     appCtx.broadcast({ type: 'tree_changed', project_id: ctx.id });
     return { ok: true, deleted: deleted.length };
+  });
+
+  // ─────────────────────── 批量删除（进回收站） ───────────────────────
+
+  /**
+   * 一次删除多项。
+   *
+   * 与单项删除的差别不是「省几次请求」，而是**原子性**：
+   *   全部快照成功 → 才开始移动；移动中途失败 → 把已移的恢复回去。
+   * 单项删除可以「失败就失败」，批量删除不行 —— 用户以为删了三个，
+   * 实际只删了两个半，剩下的状态没人说得清。
+   *
+   * 返回值带上每项的 trash_id：前端「撤销」必须知道恢复哪些。
+   */
+  app.post('/api/projects/:pid/nodes/delete', async (request) => {
+    const { pid } = request.params as { pid: string };
+    const ctx = await projectOf(appCtx, pid);
+    const body = (request.body ?? {}) as Record<string, unknown>;
+
+    if (!Array.isArray(body.ids)) throw badRequest('ids 必须是数组');
+    const ids = (body.ids as unknown[])
+      .filter((x): x is string => typeof x === 'string' && x.trim().length > 0)
+      .map((x) => x.trim());
+    if (ids.length === 0) throw badRequest('ids 不能为空');
+    if (ids.length > 200) throw badRequest('一次最多删除 200 项');
+
+    const result = await withTreeLock(ctx, async () => {
+      const tree = await ctx.store.readTree();
+
+      // 1. 存在性校验：任何一项不存在就整体 404，且此时还没动过任何文件
+      const known = new Set(tree.nodes.map((n) => n.id));
+      const missing = ids.filter((id) => !known.has(id));
+      if (missing.length > 0) {
+        throw notFound(`节点不存在：${missing.join('、')}`, 'node_not_found');
+      }
+
+      // 2. 去掉嵌套项：同时传了卷和它下面的章，只处理卷
+      const { keep } = pickOutermostIds(tree.nodes, ids);
+      // 3. 稳定顺序：同一父目录下序号大的先删
+      const ordered = orderForDeletion(tree.nodes, keep);
+      // 4. 涉及的全部节点（含后代），快照要覆盖到每一个场景
+      const affected = collectSubtree(tree.nodes, ordered);
+      const sceneIds = affected.filter((n) => n.kind === 'scene').map((n) => n.id);
+
+      // 5. 快照阶段：全部成功才继续。持相关文档的保存锁，
+      //    避免「拍完快照、正文又被保存改掉」这种无意义的快照。
+      await withManySaveLocks(ctx, sceneIds, async () => {
+        for (const item of affected) {
+          if (item.kind !== 'scene') continue;
+          try {
+            const scene = await ctx.store.readScene(item.id);
+            if (scene && scene.body.trim()) {
+              await ctx.snapshots.create(item.id, item.title, scene.body, 'delete', true);
+            }
+          } catch (err) {
+            // 宁可删除失败，也不能丢稿
+            throw new Error(`删除前快照失败（${item.title}）：${(err as Error).message}`);
+          }
+        }
+      });
+
+      // 6. 移动阶段：同样持锁，逐个移入回收站
+      const items: BatchDeleteItem[] = [];
+      const moved: Array<{ trashId: string; docId: string }> = [];
+      try {
+        await withManySaveLocks(ctx, ordered, async () => {
+          for (const docId of ordered) {
+            const node = tree.nodes.find((n) => n.id === docId);
+            if (!node) throw new Error(`节点在删除过程中消失：${docId}`);
+            const { trashId } = await ctx.store.deleteNodeToTrash(docId);
+            moved.push({ trashId, docId });
+            items.push({
+              trash_id: trashId,
+              doc_id: docId,
+              title: node.title,
+              kind: node.kind,
+            });
+          }
+        });
+      } catch (err) {
+        // 7. 回滚：把已经移走的恢复回去。恢复失败必须说出来，不能静默。
+        const rollbackErrors: string[] = [];
+        for (const m of moved) {
+          try {
+            await ctx.store.restoreFromTrash(m.trashId);
+          } catch (e) {
+            rollbackErrors.push(`${m.docId}: ${(e as Error).message}`);
+          }
+        }
+
+        if (rollbackErrors.length > 0) {
+          throw new Error(
+            `批量删除失败，且回滚不完整。` +
+              `已在回收站：${moved.map((m) => m.trashId).join('、')}；` +
+              `回滚失败：${rollbackErrors.join('；')}。` +
+              `原始错误：${(err as Error).message}`,
+          );
+        }
+        throw new Error(`批量删除失败，已全部回滚：${(err as Error).message}`);
+      }
+
+      // 8. 清索引 + 对齐树（出场统计会随之重建）
+      for (const item of affected) {
+        try {
+          ctx.indexer.removeDoc(item.id);
+        } catch (e) {
+          console.error(`[docs] 清理索引失败 ${item.id}:`, e);
+        }
+      }
+      await syncTreeToIndex(ctx);
+
+      const response: BatchDeleteResponse = { ok: true, deleted: items.length, items };
+      return response;
+    });
+
+    // 一次操作只广播一次，避免前端刷新 N 遍
+    appCtx.broadcast({ type: 'tree_changed', project_id: ctx.id });
+    return result;
   });
 
   // ─────────────────────── 读正文 ───────────────────────
@@ -458,4 +580,21 @@ export function withSaveLock<T>(ctx: ProjectContext, docId: string, fn: () => Pr
       if (saveChains.get(key) === next || saveChains.get(key) === undefined) return;
     });
   return next;
+}
+
+/**
+ * 同时持有多个文档的保存锁（按 key 排序后嵌套获取，避免死锁）。
+ *
+ * 批量删除要对一批文档做「快照 + 移动」，期间不能让保存插进来。
+ * 排序保证任意两个批量请求的获取顺序一致，因此不会互相等待成环。
+ */
+async function withManySaveLocks<T>(
+  ctx: ProjectContext,
+  docIds: string[],
+  fn: () => Promise<T>,
+): Promise<T> {
+  const sorted = [...new Set(docIds)].sort();
+  const run = (i: number): Promise<T> =>
+    i >= sorted.length ? fn() : withSaveLock(ctx, sorted[i], () => run(i + 1));
+  return run(0);
 }

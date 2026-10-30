@@ -283,6 +283,34 @@ export async function goalProgress(ctx: ProjectContext): Promise<GoalProgress> {
  * 只重扫「元数据变了」的场景，不重建全书 —— 改个卷名不该触发 300 万字重扫。
  * 索引本来就是可重建的，这里做的是便宜的增量修补。
  */
+// ─────────────────────── 树结构级排他锁 ───────────────────────
+
+/**
+ * 树结构变更的项目级串行锁。
+ *
+ * 为什么需要它（D0 的 Q9 结论）：删除/恢复会移动目录，
+ * 而保存只锁单个文档。两个并发的「批量删除」如果交错执行，
+ * 可能出现一边在数树、另一边已经把目录移走，导致回滚时找不到目标。
+ *
+ * 粒度是「项目」而不是「文档」：树操作本来就改整棵树，
+ * 单作者本地场景下串行化的代价可以忽略。
+ *
+ * 与 withSaveLock 的关系：树锁在外层，内层再按 docId 逐个拿保存锁，
+ * 保证「保存正在写某文件」与「把该文件移走」不会同时发生。
+ */
+const treeChains = new Map<string, Promise<unknown>>();
+
+export function withTreeLock<T>(ctx: ProjectContext, fn: () => Promise<T>): Promise<T> {
+  const key = ctx.root;
+  const prev = treeChains.get(key) ?? Promise.resolve();
+  const next = prev.then(fn, fn);
+  treeChains.set(
+    key,
+    next.catch(() => undefined),
+  );
+  return next;
+}
+
 export async function syncTreeToIndex(ctx: ProjectContext): Promise<void> {
   const tree = await ctx.store.readTree();
   for (const node of tree.nodes) {

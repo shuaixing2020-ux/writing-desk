@@ -322,6 +322,77 @@ async function main() {
       return '删除 → 回收站 → 恢复';
     });
 
+    await check('批量删除 → 回收站 → 批量恢复（结构与顺序一致）', async () => {
+      // 造一个独立的小结构，避免影响后续检查依赖《雨夜》
+      const mk = async (kind, parentId, title) => {
+        const r = await fetch(`${BASE}/api/projects/${projectId}/nodes`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ kind, parent_id: parentId, title }),
+        });
+        assert(r.ok, `建 ${title} 失败 HTTP ${r.status}`);
+        return r.json();
+      };
+
+      const vol = await mk('volume', null, '批量卷');
+      const chap = await mk('chapter', vol.id, '批量章');
+      const s1 = await mk('scene', chap.id, '批量场景一');
+      const s2 = await mk('scene', chap.id, '批量场景二');
+
+      for (const [i, s] of [s1, s2].entries()) {
+        const w = await fetch(`${BASE}/api/projects/${projectId}/scenes/${s.id}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ body: `批量内容 ${i + 1}` }),
+        });
+        assert(w.ok, `写正文失败 HTTP ${w.status}`);
+      }
+
+      const shapeOf = async () => {
+        const t = await (await fetch(`${BASE}/api/projects/${projectId}/tree`)).json();
+        return t.nodes
+          .filter((n) => n.title.startsWith('批量'))
+          .map((n) => `${n.kind}:${n.title}:${n.parent_id}:${n.order}`)
+          .sort()
+          .join('|');
+      };
+
+      const before = await shapeOf();
+      assert(before.split('|').length === 4, `前置条件：应有 4 个批量节点，实际 ${before}`);
+
+      // 批量删除两个场景
+      const del = await fetch(`${BASE}/api/projects/${projectId}/nodes/delete`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ids: [s1.id, s2.id] }),
+      });
+      assert(del.status === 200, `批量删除失败 HTTP ${del.status}`);
+      const delBody = await del.json();
+      assert(delBody.deleted === 2, `应删 2 项，实际 ${delBody.deleted}`);
+      assert(
+        delBody.items.length === 2 && delBody.items.every((i) => typeof i.trash_id === 'string' && i.trash_id),
+        '批量删除必须返回每项的 trash_id（撤销需要）',
+      );
+
+      const mid = await shapeOf();
+      assert(mid.split('|').length === 2, `删除后应剩 2 个容器，实际 ${mid}`);
+
+      // 批量恢复
+      const res = await fetch(`${BASE}/api/projects/${projectId}/trash/restore-batch`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ids: delBody.items.map((i) => i.trash_id) }),
+      });
+      assert(res.status === 200, `批量恢复失败 HTTP ${res.status}`);
+      const resBody = await res.json();
+      assert(resBody.restored === 2, `应恢复 2 项，实际 ${resBody.restored}`);
+
+      const after = await shapeOf();
+      assert(after === before, `恢复后结构应完全一致\n  删除前: ${before}\n  恢复后: ${after}`);
+
+      return '2 项批量删除与恢复，结构顺序一致';
+    });
+
     await check('索引可重建（删库不丢内容）', async () => {
       const idx = path.join(dataDir, projectId, '.studio', 'index.sqlite');
       assert(await exists(idx), '索引文件不存在');

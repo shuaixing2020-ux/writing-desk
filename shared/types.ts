@@ -406,6 +406,29 @@ export interface DiffResult {
   stats: { added: number; removed: number; unchanged: number };
 }
 
+// ─────────────────────────── 批量删除 / 恢复 ───────────────────────────
+
+/** 批量删除成功的单项回执。trash_id 用于「撤销」时精确恢复这一项 */
+export interface BatchDeleteItem {
+  /** 回收站条目 id（.studio/trash/ 下的目录名） */
+  trash_id: string;
+  doc_id: string;
+  title: string;
+  kind: NodeKind;
+}
+
+export interface BatchDeleteResponse {
+  ok: true;
+  /** 实际被删的「根节点」数量（嵌套传入的后代不计） */
+  deleted: number;
+  items: BatchDeleteItem[];
+}
+
+export interface BatchRestoreResponse {
+  ok: true;
+  restored: number;
+}
+
 // ─────────────────────────── 回收站 ───────────────────────────
 
 export interface TrashItem {
