@@ -65,9 +65,14 @@ export function registerGraphRoutes(app: FastifyInstance, appCtx: AppContextImpl
     const query = (request.query ?? {}) as Record<string, unknown>;
 
     const type = requireString(body.type, 'type', { max: 60 });
-    const to = requireString(body.to, 'to', { max: 120 });
+    // 新契约：other + direction（关系写在发起方文件里，箭头表方向）；
+    // 旧契约：to（等价于发起方是起点）
+    const other = typedString(body.other) ?? typedString(body.to);
+    if (!other) throw badRequest('缺少对方条目（other 或 to）', 'rel_target_missing');
+    const direction =
+      body.direction === 'in' || body.direction === 'out' ? body.direction : 'out';
 
-    const input: RelationInput = { type, to };
+    const input: RelationInput = { type, other, direction };
     if (typeof body.id === 'string' && body.id.trim()) input.id = body.id.trim();
     if (typedString(body.since)) input.since = typedString(body.since)!;
     if (typedString(body.until)) input.until = typedString(body.until)!;
@@ -104,6 +109,8 @@ export function registerGraphRoutes(app: FastifyInstance, appCtx: AppContextImpl
         body.weight === null ? null : typeof body.weight === 'number' ? body.weight : null;
     }
     if (typeof body.note === 'string') patch.note = body.note.slice(0, 2000);
+    // 翻转箭头：direction 相对关系所在文件
+    if (body.direction === 'in' || body.direction === 'out') patch.direction = body.direction;
 
     if (Object.keys(patch).length === 0) {
       throw badRequest('没有要修改的字段', 'empty_patch');

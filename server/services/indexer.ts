@@ -12,11 +12,16 @@ import type { DocNode } from '../../shared/types.ts';
 import type { ProjectContext } from '../context.ts';
 import type { JobContext } from '../util/job-queue.ts';
 import { ENTITY_DIRS } from '../store/project.ts';
-import { parseRelations, relationsOnly } from '../graph/relations-format.ts';
+import {
+  canonicalize,
+  parseRelations,
+  relationsOnly,
+  type ParsedRelation,
+} from '../graph/relations-format.ts';
 import { resolveTypeKey, loadRelationTypes } from '../graph/types.ts';
 
 /** 索引结构与内容的版本。改动表结构或新增索引表时加一。 */
-export const INDEX_SCHEMA_VERSION = 2;
+export const INDEX_SCHEMA_VERSION = 3;
 
 export interface RebuildStats {
   docs: number;
@@ -170,7 +175,7 @@ export class IndexerService {
         (l) => l.kind === 'raw' && l.text.trim() !== '' && !l.text.trim().startsWith('#'),
       ).length;
 
-      parsed.push({ entityId: entity.id, rows: toIndexRows(relationsOnly(lines), types) });
+      parsed.push({ entityId: entity.id, rows: toIndexRows(entity.id, relationsOnly(lines), types) });
     }
 
     let indexed = 0;
@@ -194,7 +199,7 @@ export class IndexerService {
     }
     const types = await loadRelationTypes(this.ctx.root);
     const lines = parseRelations(located.block);
-    const rows = toIndexRows(relationsOnly(lines), types);
+    const rows = toIndexRows(entityId, relationsOnly(lines), types);
     this.ctx.index.transaction(() => this.ctx.index.replaceRelationsOf(entityId, rows));
   }
 
@@ -246,12 +251,17 @@ interface RelationIndexRow {
  * 类型统一成注册表 key（文件里写「师徒」也能正确落库成 mentor）。
  */
 function toIndexRows(
-  rels: Array<Omit<import('../../shared/types.ts').Relation, 'from'>>,
+  ownerId: string,
+  rels: ParsedRelation[],
   types: Awaited<ReturnType<typeof loadRelationTypes>>,
 ): RelationIndexRow[] {
-  return rels.map((rel) => ({
+  return rels.map((rel) => {
+    // 行里只记「对方 + 箭头」，规范方向由所在文件决定
+    const { from, to } = canonicalize(ownerId, rel);
+    return {
     id: rel.id,
-    to_id: rel.to,
+    from_id: from,
+    to_id: to,
     type: resolveTypeKey(types, rel.type) ?? rel.type,
     since: rel.since ?? null,
     until: rel.until ?? null,
@@ -260,5 +270,6 @@ function toIndexRows(
     note: rel.note ?? '',
     extra: rel.extra_props ?? null,
     line_no: null,
-  }));
+    };
+  });
 }

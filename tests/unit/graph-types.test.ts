@@ -180,3 +180,77 @@ describe('配置文件覆盖', () => {
     await fs.rm(dir, { recursive: true, force: true });
   });
 });
+
+// ─────────────────────────── G1' 修订：角色词（A2） ───────────────────────────
+
+describe('角色词（A2）', () => {
+  const table = defaultRelationTypes();
+
+  test('师徒：师父 / 徒弟，非对称', () => {
+    const def = getTypeDef(table, 'mentor')!;
+    assert.equal(def.from_role, '师父');
+    assert.equal(def.to_role, '徒弟');
+    assert.equal(def.symmetric, false);
+  });
+
+  test('亲属：父母 / 子女', () => {
+    const def = getTypeDef(table, 'kin')!;
+    assert.equal(def.from_role, '父母');
+    assert.equal(def.to_role, '子女');
+    assert.equal(def.symmetric, false);
+  });
+
+  test('对称类型只有一个称呼', () => {
+    for (const key of ['love', 'ally', 'enemy']) {
+      const def = getTypeDef(table, key)!;
+      assert.equal(def.symmetric, true, `${key} 应是对称关系`);
+      assert.equal(def.from_role, def.to_role, `${key} 的两个角色词应相同`);
+    }
+  });
+
+  test('其余内置类型都有角色词', () => {
+    for (const key of ['member_of', 'located_at', 'participates', 'causes', 'owns']) {
+      const def = getTypeDef(table, key)!;
+      assert.ok(def.from_role.length > 0, `${key} 缺 from_role`);
+      assert.ok(def.to_role.length > 0, `${key} 缺 to_role`);
+    }
+  });
+
+  test('配置文件可覆盖角色词', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'wd-roles-'));
+    try {
+      await fs.mkdir(path.join(dir, 'bible'), { recursive: true });
+      await fs.writeFile(
+        path.join(dir, RELATION_TYPES_FILE),
+        JSON.stringify([{ key: 'mentor', from_role: '师尊', to_role: '门徒' }]),
+      );
+      const loaded = await loadRelationTypes(dir);
+      const def = getTypeDef(loaded, 'mentor')!;
+      assert.equal(def.from_role, '师尊');
+      assert.equal(def.to_role, '门徒');
+      // 没覆盖的字段仍用内置值
+      assert.equal(def.label, '师徒');
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('旧配置文件（没有角色词）仍可用：回退到 label 与 inverse_label', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'wd-roles-'));
+    try {
+      await fs.mkdir(path.join(dir, 'bible'), { recursive: true });
+      await fs.writeFile(
+        path.join(dir, RELATION_TYPES_FILE),
+        JSON.stringify([{ key: 'mentor', label: '师承' }]),
+      );
+      const loaded = await loadRelationTypes(dir);
+      const def = getTypeDef(loaded, 'mentor')!;
+      assert.equal(def.label, '师承', '显示名应被覆盖');
+      // 只改显示名时角色词沿用内置默认值：作者没写的字段不该被猜成别的词
+      assert.equal(def.from_role, '师父');
+      assert.equal(def.to_role, '徒弟');
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+});

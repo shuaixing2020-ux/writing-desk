@@ -123,10 +123,13 @@ CREATE TABLE IF NOT EXISTS meta (
 );
 
 -- 关系索引。与其他索引表一样：**可丢弃重建**，真相在条目文件的 relations 块里。
--- 起点 id 是关系所属的条目（关系存在起点的文件里），终点 id 是被指向的条目。
+-- 关系行写在「发起操作的条目」文件里，箭头表方向，因此需要两个概念：
+--   owner_id：这一行写在哪个条目文件里（更新/删除时去这里找）
+--   from_id / to_id：规范方向（起点 / 终点），与写在哪无关
 -- 这张表只存结构化的字段；无法解析的行不进表，由 lint 从文件里报告。
 CREATE TABLE IF NOT EXISTS relation (
   id        TEXT PRIMARY KEY,
+  owner_id  TEXT,
   from_id   TEXT NOT NULL,
   to_id     TEXT NOT NULL,
   type      TEXT NOT NULL,
@@ -140,7 +143,8 @@ CREATE TABLE IF NOT EXISTS relation (
   -- 在 relations 块里的行号（从 1 开始），用于 lint 定位
   line_no   INTEGER
 );
-CREATE INDEX IF NOT EXISTS relation_from ON relation(from_id);
+CREATE INDEX IF NOT EXISTS relation_from  ON relation(from_id);
+CREATE INDEX IF NOT EXISTS relation_owner ON relation(owner_id);
 CREATE INDEX IF NOT EXISTS relation_to   ON relation(to_id);
 CREATE INDEX IF NOT EXISTS relation_type ON relation(type);
 
@@ -289,17 +293,20 @@ export class IndexDb {
   // 真相是条目文件的 `relations: |` 块，表只用于快速反查（某人被谁指向）。
 
   /** 整体替换某个起点的全部关系（先删后插，调用方保证在事务内） */
-  replaceRelationsOf(fromId: string, rels: RelationRow[]): void {
-    this.db.prepare('DELETE FROM relation WHERE from_id = ?').run(fromId);
+  replaceRelationsOf(ownerId: string, rels: RelationRow[]): void {
+    // 按「写在哪个文件」清理：同一条规范的边可能被两个文件各写一行，
+    // 用 from_id 清理会误删另一端的行。
+    this.db.prepare('DELETE FROM relation WHERE owner_id = ?').run(ownerId);
     const insert = this.db.prepare(
       `INSERT OR REPLACE INTO relation
-        (id, from_id, to_id, type, since, until, reveal, weight, note, extra, line_no)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (id, owner_id, from_id, to_id, type, since, until, reveal, weight, note, extra, line_no)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     for (const r of rels) {
       insert.run(
         r.id,
-        fromId,
+        ownerId,
+        r.from_id ?? ownerId,
         r.to_id,
         r.type,
         r.since ?? null,
@@ -566,6 +573,8 @@ export interface RelationRow {
   note: string;
   extra: Record<string, string> | null;
   line_no: number | null;
+  /** 这一行写在哪个条目文件里 */
+  owner_id?: string;
 }
 
 function toRelationRow(raw: Record<string, unknown>): StoredRelationRow {

@@ -712,6 +712,15 @@ export interface RelationTypeDef {
   acyclic: boolean;
   /** 与之语义冲突的类型（如 ally 与 enemy），仅用于提示，不拒绝 */
   exclusive_with: string[];
+  /**
+   * 起点一方的称呼（如「师父」）。
+   * 一句话建关系靠它把「X 是 Y 的师父」翻成方向，作者不用理解起点终点。
+   */
+  from_role: string;
+  /** 终点一方的称呼（如「徒弟」） */
+  to_role: string;
+  /** 对称类型只有一个称呼（from_role 与 to_role 相同） */
+  symmetric: boolean;
 }
 
 /** 新增关系的入参 */
@@ -723,8 +732,15 @@ export interface RelationInput {
   id?: string;
   /** 类型键或中文显示名 */
   type: string;
-  /** 目标条目 id */
-  to: string;
+  /** 目标条目 id（旧契约：发起方必须是起点） */
+  to?: string;
+  /**
+   * 对方条目 id（新契约）。与 direction 一起使用：
+   * 关系行写在发起操作的条目文件里，方向相对它。
+   */
+  other?: string;
+  /** 相对发起方：out = 发起方指向对方，in = 对方指向发起方 */
+  direction?: 'out' | 'in';
   since?: string;
   until?: string;
   reveal?: string;
@@ -745,6 +761,8 @@ export interface RelationPatch {
   reveal?: string | null;
   weight?: number | null;
   note?: string;
+  /** 翻转箭头：out/in 相对关系所在文件 */
+  direction?: 'out' | 'in';
 }
 
 /** 条目详情里的关系视图 */

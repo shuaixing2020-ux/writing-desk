@@ -36,6 +36,9 @@ const BUILTIN: BuiltinTypeDef[] = [
     allowed: [['character', 'character']],
     acyclic: true,
     exclusive_with: [],
+    from_role: '师父',
+    to_role: '徒弟',
+    symmetric: false,
   },
   {
     key: 'kin',
@@ -45,6 +48,9 @@ const BUILTIN: BuiltinTypeDef[] = [
     allowed: [['character', 'character']],
     acyclic: false,
     exclusive_with: [],
+    from_role: '父母',
+    to_role: '子女',
+    symmetric: false,
   },
   {
     key: 'love',
@@ -54,6 +60,9 @@ const BUILTIN: BuiltinTypeDef[] = [
     allowed: [['character', 'character']],
     acyclic: false,
     exclusive_with: [],
+    from_role: '恋人',
+    to_role: '恋人',
+    symmetric: true,
   },
   {
     key: 'ally',
@@ -68,6 +77,9 @@ const BUILTIN: BuiltinTypeDef[] = [
     ],
     acyclic: false,
     exclusive_with: ['enemy'],
+    from_role: '盟友',
+    to_role: '盟友',
+    symmetric: true,
   },
   {
     key: 'enemy',
@@ -82,6 +94,9 @@ const BUILTIN: BuiltinTypeDef[] = [
     ],
     acyclic: false,
     exclusive_with: ['ally'],
+    from_role: '仇敌',
+    to_role: '仇敌',
+    symmetric: true,
   },
   {
     key: 'member_of',
@@ -94,6 +109,9 @@ const BUILTIN: BuiltinTypeDef[] = [
     ],
     acyclic: false,
     exclusive_with: [],
+    from_role: '成员',
+    to_role: '所属势力',
+    symmetric: false,
   },
   {
     key: 'located_at',
@@ -107,6 +125,9 @@ const BUILTIN: BuiltinTypeDef[] = [
     ],
     acyclic: false,
     exclusive_with: [],
+    from_role: '所在者',
+    to_role: '所在地',
+    symmetric: false,
   },
   {
     key: 'participates',
@@ -116,6 +137,9 @@ const BUILTIN: BuiltinTypeDef[] = [
     allowed: [['character', 'event']],
     acyclic: false,
     exclusive_with: [],
+    from_role: '参与者',
+    to_role: '事件',
+    symmetric: false,
   },
   {
     key: 'causes',
@@ -125,6 +149,9 @@ const BUILTIN: BuiltinTypeDef[] = [
     allowed: [['event', 'event']],
     acyclic: true,
     exclusive_with: [],
+    from_role: '起因',
+    to_role: '结果',
+    symmetric: false,
   },
   {
     key: 'owns',
@@ -137,6 +164,9 @@ const BUILTIN: BuiltinTypeDef[] = [
     ],
     acyclic: false,
     exclusive_with: [],
+    from_role: '持有者',
+    to_role: '物品',
+    symmetric: false,
   },
 ];
 
@@ -161,6 +191,9 @@ function toDef(raw: BuiltinTypeDef): RelationTypeDef {
     allowed: raw.allowed ?? null,
     acyclic: raw.acyclic,
     exclusive_with: raw.exclusive_with ?? [],
+    from_role: raw.from_role ?? raw.label,
+    to_role: raw.to_role ?? raw.inverse_label ?? raw.label,
+    symmetric: raw.symmetric ?? !raw.directed,
   };
   return def;
 }
@@ -186,6 +219,12 @@ interface ConfigEntry {
   allowed?: Array<[string, string]> | null;
   acyclic?: boolean;
   exclusive_with?: string[];
+  /** 角色词：起点一方的称呼（如「师父」） */
+  from_role?: string;
+  /** 角色词：终点一方的称呼（如「徒弟」） */
+  to_role?: string;
+  /** 对称类型只有一个称呼 */
+  symmetric?: boolean;
   /** 删除一个内置类型（作者不想要） */
   disabled?: boolean;
 }
@@ -258,19 +297,35 @@ export async function loadRelationTypes(root: string): Promise<RelationTypeTable
               .map(([a, b]) => [a, b] as [EntityType, EntityType])
           : (base?.allowed ?? null);
 
+    const label =
+      typeof e.label === 'string' && e.label.trim() ? e.label.trim() : (base?.label ?? key);
+    const inverseLabel =
+      typeof e.inverse_label === 'string' && e.inverse_label.trim()
+        ? e.inverse_label.trim()
+        : (base?.inverse_label ?? base?.label ?? key);
+    const directed = typeof e.directed === 'boolean' ? e.directed : (base?.directed ?? true);
+
     const def: RelationTypeDef = {
       key,
-      label: typeof e.label === 'string' && e.label.trim() ? e.label.trim() : (base?.label ?? key),
-      inverse_label:
-        typeof e.inverse_label === 'string' && e.inverse_label.trim()
-          ? e.inverse_label.trim()
-          : (base?.inverse_label ?? base?.label ?? key),
-      directed: typeof e.directed === 'boolean' ? e.directed : (base?.directed ?? true),
+      label,
+      inverse_label: inverseLabel,
+      directed,
       allowed,
       acyclic: typeof e.acyclic === 'boolean' ? e.acyclic : (base?.acyclic ?? false),
       exclusive_with: Array.isArray(e.exclusive_with)
         ? e.exclusive_with.filter((x): x is string => typeof x === 'string')
         : (base?.exclusive_with ?? []),
+      // 角色词：配置文件没写就沿用内置默认值（旧配置因此仍然可用）
+      from_role:
+        typeof e.from_role === 'string' && e.from_role.trim()
+          ? e.from_role.trim()
+          : (base?.from_role ?? label),
+      to_role:
+        typeof e.to_role === 'string' && e.to_role.trim()
+          ? e.to_role.trim()
+          : (base?.to_role ?? inverseLabel),
+      symmetric:
+        typeof e.symmetric === 'boolean' ? e.symmetric : (base?.symmetric ?? !directed),
     };
 
     table.byKey.set(key, def);

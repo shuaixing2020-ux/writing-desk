@@ -10,6 +10,8 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  canonicalize,
+  lineFor,
   looksLikeBrokenRelation,
   newRelationId,
   parseRelations,
@@ -134,12 +136,12 @@ describe('关系序列化与往返幂等', () => {
   });
 
   test('stringifyRelation 单独可用', () => {
-    const line = stringifyRelation({ id: 'r_9', type: 'owns', to: 'E1', to_name: '未名剑', since: 'D1', note: '第一件' });
+    const line = stringifyRelation({ id: 'r_9', type: 'owns', to: 'E1', to_name: '未名剑', since: 'D1', note: '第一件', direction: 'out' });
     assert.equal(line, 'id=r_9 owns -> E1 (未名剑) | since=D1 | 第一件');
   });
 
   test('有备注无属性：只用一个管道，且能正确解析回备注', () => {
-    const line = stringifyRelation({ id: 'r_9', type: 'kin', to: 'E1', note: '只是备注' });
+    const line = stringifyRelation({ id: 'r_9', type: 'kin', to: 'E1', note: '只是备注', direction: 'out' });
     // 空属性段 ' | | ' 有歧义（连续分隔符会互相吞掉），所以只用单个管道；
     // 解析侧靠「不含 key=value」判断第二段是备注。
     assert.equal(line, 'id=r_9 kin -> E1 | 只是备注');
@@ -165,5 +167,115 @@ describe('新关系 id 与破损行识别', () => {
     assert.equal(looksLikeBrokenRelation(lines[1]), true, '缺类型的行应被识别为坏行');
     assert.equal(looksLikeBrokenRelation(lines[2]), false, '普通文字不算坏行（可能是作者的备注段）');
     assert.equal(looksLikeBrokenRelation(lines[3]), false, '合法关系不算坏行');
+  });
+});
+
+// ─────────────────────────── G1' 修订：箭头方向 ───────────────────────────
+
+describe('箭头方向（A1）', () => {
+  test('-> 解析为 out（本条目是起点）', () => {
+    const [line] = parseRelations('id=r1 mentor -> E2 (林远) | 传艺');
+    assert.equal(line.kind, 'rel');
+    const rel = (line as { rel: { direction: string; to: string } }).rel;
+    assert.equal(rel.direction, 'out');
+    assert.equal(rel.to, 'E2');
+  });
+
+  test('<- 解析为 in（对方是起点）', () => {
+    const [line] = parseRelations('id=r1 mentor <- E2 (老掌门) | 传艺');
+    assert.equal(line.kind, 'rel');
+    const rel = (line as { rel: { direction: string; to: string } }).rel;
+    assert.equal(rel.direction, 'in');
+    assert.equal(rel.to, 'E2');
+  });
+
+  test('<- 往返不丢方向', () => {
+    const src = 'id=r1 mentor <- E2 (老掌门) | since=D1 | 传授';
+    const back = stringifyRelations(parseRelations(src));
+    assert.equal(back, src);
+    assert.equal(parseRelations(back)[0].kind, 'rel');
+    assert.equal((parseRelations(back)[0] as { rel: { direction: string } }).rel.direction, 'in');
+  });
+
+  test('同一对条目两个方向的行可以并存', () => {
+    const block = ['id=r1 mentor -> E2 (林远)', 'id=r2 kin <- E2 (老掌门)'].join('\n');
+    const lines = parseRelations(block);
+    assert.equal(lines.length, 2);
+    assert.deepEqual(
+      lines.map((l) => (l as { rel: { direction: string } }).rel.direction),
+      ['out', 'in'],
+    );
+  });
+
+  test('箭头两侧允许空格', () => {
+    assert.equal(parseRelations('id=r1 kin->  E2')[0].kind, 'rel');
+    assert.equal(parseRelations('id=r1 kin  <-E2')[0].kind, 'rel');
+  });
+
+  test('缺少箭头或箭头非法 → 作为 raw 保留', () => {
+    assert.equal(parseRelations('id=r1 mentor E2')[0].kind, 'raw');
+    assert.equal(parseRelations('id=r1 mentor => E2')[0].kind, 'raw');
+  });
+
+  test('looksLikeBrokenRelation 认得出 <- 写坏的行', () => {
+    const lines = parseRelations('id=r1 <- ');
+    assert.equal(looksLikeBrokenRelation(lines[0]), true);
+  });
+});
+
+describe('canonicalize：相对行 → 规范方向（A1）', () => {
+  test('out：本条目是起点', () => {
+    assert.deepEqual(
+      canonicalize('ME', { id: 'r1', type: 'mentor', to: 'OTHER', direction: 'out', note: '' }),
+      { from: 'ME', to: 'OTHER' },
+    );
+  });
+
+  test('in：本条目是终点', () => {
+    assert.deepEqual(
+      canonicalize('ME', { id: 'r1', type: 'mentor', to: 'OTHER', direction: 'in', note: '' }),
+      { from: 'OTHER', to: 'ME' },
+    );
+  });
+});
+
+describe('lineFor：规范关系 → 某文件里的一行（A1）', () => {
+  const rel = {
+    id: 'r1',
+    type: 'mentor',
+    from: 'A',
+    to: 'B',
+    note: '传艺',
+  };
+
+  test('写在起点文件：->', () => {
+    const line = lineFor('A', rel);
+    assert.equal(line.direction, 'out');
+    assert.equal(line.to, 'B');
+    assert.equal(stringifyRelation(line), 'id=r1 mentor -> B | 传艺');
+  });
+
+  test('写在终点文件：<-', () => {
+    const line = lineFor('B', rel);
+    assert.equal(line.direction, 'in');
+    assert.equal(line.to, 'A');
+    assert.equal(stringifyRelation(line), 'id=r1 mentor <- A | 传艺');
+  });
+
+  test('两个文件各写一行，解析回来指向同一条规范关系', () => {
+    for (const owner of ['A', 'B']) {
+      const back = relationsOnly(parseRelations(stringifyRelation(lineFor(owner, rel))))[0];
+      assert.deepEqual(canonicalize(owner, back), { from: 'A', to: 'B' });
+    }
+  });
+
+  test('属性与备注一并保留', () => {
+    const rich = { ...rel, since: 'D1', until: 'D2', reveal: 'D3', weight: 3, extra_props: { custom: 'x' } };
+    const line = lineFor('B', rich);
+    assert.equal(line.since, 'D1');
+    assert.equal(line.until, 'D2');
+    assert.equal(line.reveal, 'D3');
+    assert.equal(line.weight, 3);
+    assert.deepEqual(line.extra_props, { custom: 'x' });
   });
 });

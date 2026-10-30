@@ -400,3 +400,133 @@ describe('悬空与 lint', () => {
     await teardown(c);
   });
 });
+
+// ─────────────────────── G1' 修订：owner + direction（A3） ───────────────────────
+
+describe('发起方与方向（A3）', () => {
+  test('在林远页面建「老掌门是林远的师父」：写进林远文件，方向为 in', async () => {
+    const c = await setup();
+    try {
+      // owner = 林远(a)，other = 老掌门(b)，方向 in 表示对方是起点
+      const rel = await c.graph.create(c.entities.a, {
+        type: 'mentor',
+        other: c.entities.b,
+        direction: 'in',
+      });
+      assert.equal(rel.from, c.entities.b, '起点应是老掌门');
+      assert.equal(rel.to, c.entities.a, '终点应是林远');
+
+      // 林远文件里应有一行 `<-`，老掌门文件里不该有这条关系
+      const ctx = await c.app.openProject('p');
+      const aRaw = await ctx.store.entityRelationsRaw(c.entities.a);
+      const bRaw = await ctx.store.entityRelationsRaw(c.entities.b);
+      assert.match(aRaw!.block, /<-/);
+      assert.ok(!bRaw || !bRaw.block.includes(rel.id), '对方文件不该被改动');
+    } finally {
+      await c.app.closeAll();
+      await fs.rm(c.dir, { recursive: true, force: true });
+    }
+  });
+
+  test('两个方向的建法得到同一条规范关系', async () => {
+    const c = await setup();
+    try {
+      // 老掌门为 owner、方向 out
+      const r1 = await c.graph.create(c.entities.b, {
+        type: 'mentor',
+        other: c.entities.a,
+        direction: 'out',
+      });
+      assert.equal(r1.from, c.entities.b);
+      assert.equal(r1.to, c.entities.a);
+
+      // 同一个关系换 owner 建会被判重复
+      await assert.rejects(
+        () =>
+          c.graph.create(c.entities.a, {
+            type: 'mentor',
+            other: c.entities.b,
+            direction: 'in',
+          }),
+        (err: unknown) => err instanceof RelationError && err.code === 'rel_duplicate',
+      );
+    } finally {
+      await c.app.closeAll();
+      await fs.rm(c.dir, { recursive: true, force: true });
+    }
+  });
+
+  test('旧契约 { to } 仍然有效（发起方是起点）', async () => {
+    const c = await setup();
+    try {
+      const rel = await c.graph.create(c.entities.a, { type: 'mentor', to: c.entities.b });
+      assert.equal(rel.from, c.entities.a);
+      assert.equal(rel.to, c.entities.b);
+    } finally {
+      await c.app.closeAll();
+      await fs.rm(c.dir, { recursive: true, force: true });
+    }
+  });
+
+  test('PATCH direction 翻转箭头，且只在原文件里改', async () => {
+    const c = await setup();
+    try {
+      const ctx = await c.app.openProject('p');
+      const rel = await c.graph.create(c.entities.a, {
+        type: 'mentor',
+        other: c.entities.b,
+        direction: 'in', // 写在林远文件里的 `<-`
+      });
+
+      // 当前相对方向是 in；改成 out 应翻转
+      const flipped = await c.graph.update(rel.id, { direction: 'out' });
+      assert.equal(flipped.from, c.entities.a, '翻转后起点应变林远');
+      assert.equal(flipped.to, c.entities.b);
+
+      const aRaw = await ctx.store.entityRelationsRaw(c.entities.a);
+      assert.match(aRaw!.block, /->/, '林远文件里应变成 ->');
+      assert.ok(!aRaw!.block.includes('<-'), '不应再有 <-');
+    } finally {
+      await c.app.closeAll();
+      await fs.rm(c.dir, { recursive: true, force: true });
+    }
+  });
+
+  test('PATCH direction 与当前方向相同则不翻转', async () => {
+    const c = await setup();
+    try {
+      const rel = await c.graph.create(c.entities.a, {
+        type: 'mentor',
+        other: c.entities.b,
+        direction: 'out',
+      });
+      const same = await c.graph.update(rel.id, { direction: 'out' });
+      assert.equal(same.from, c.entities.a);
+      assert.equal(same.to, c.entities.b);
+    } finally {
+      await c.app.closeAll();
+      await fs.rm(c.dir, { recursive: true, force: true });
+    }
+  });
+
+  test('索引按方向还原规范关系：两端都能查到', async () => {
+    const c = await setup();
+    try {
+      // 写在林远文件的 `<-` 行
+      await c.graph.create(c.entities.a, {
+        type: 'mentor',
+        other: c.entities.b,
+        direction: 'in',
+      });
+      const aView = await c.graph.list(c.entities.a);
+      const bView = await c.graph.list(c.entities.b);
+      assert.equal(aView.in.length, 1, '林远应有 1 条入向');
+      assert.equal(aView.out.length, 0);
+      assert.equal(bView.out.length, 1, '老掌门应有 1 条出向');
+      assert.equal(bView.in.length, 0);
+    } finally {
+      await c.app.closeAll();
+      await fs.rm(c.dir, { recursive: true, force: true });
+    }
+  });
+});

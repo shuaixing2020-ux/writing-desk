@@ -41,6 +41,8 @@ import { parseFrontmatter, stringifyScene, type Frontmatter } from '../util/fron
 import {
   looksLikeBrokenRelation,
   newRelationId,
+  canonicalize,
+  lineFor,
   parseRelations,
   relationsOnly,
   stringifyRelation,
@@ -290,6 +292,30 @@ export class GraphService {
    * 这是所有写操作的统一骨架：一个文件、一次读、一次写、原子落盘。
    * 锁用与场景保存同一把（withSaveLock），避免关系写入和正文保存打架。
    */
+  /**
+   * 这条关系行实际写在哪个条目文件里。
+   *
+   * 修订后的存储把关系写在「发起操作的条目」文件里，箭头表示方向，
+   * 所以它可能在起点文件，也可能在终点文件 —— 修改与删除前必须先找到它，
+   * 否则会在另一个文件里凭空造出一行重复关系。
+   */
+  private async ownerFileOf(
+    relationId: string,
+    fromId: string,
+    toId: string,
+  ): Promise<string> {
+    const hasLine = async (entityId: string): Promise<boolean> => {
+      const located = await this.ctx.store.entityRelationsRaw(entityId);
+      if (!located || !located.block) return false;
+      return parseRelations(located.block).some(
+        (l) => l.kind === 'rel' && l.rel.id === relationId,
+      );
+    };
+    if (await hasLine(fromId)) return fromId;
+    if (fromId !== toId && (await hasLine(toId))) return toId;
+    return fromId; // 两边都没有：交给上层报错
+  }
+
   private async mutateRelations<T>(
     fromId: string,
     fn: (lines: RelationLine[]) => T,
@@ -326,9 +352,15 @@ export class GraphService {
     });
   }
 
-  /** 新建关系：只改起点条目文件 */
+  /**
+   * 新建关系。
+   *
+   * 第一个参数是「发起操作的条目」（owner），关系行写进它的文件；
+   * 方向相对 owner：direction=out 表示 owner 是起点。
+   * 旧契约 `{ to }` 仍然可用，等价于 owner 是起点。
+   */
   async create(
-    fromId: string,
+    ownerId: string,
     input: RelationInput,
     opts: { dryRun?: boolean } = {},
   ): Promise<Relation> {
@@ -338,17 +370,26 @@ export class GraphService {
       throw new RelationError('rel_type_unknown', `未知的关系类型「${input.type}」。`);
     }
 
+    const other = input.other ?? input.to;
+    if (!other) {
+      throw new RelationError('rel_target_missing', '缺少对方条目。');
+    }
+    const direction = input.direction ?? 'out';
+    // 换算成规范方向：起点 → 终点
+    const fromId = direction === 'out' ? ownerId : other;
+    const toId = direction === 'out' ? other : ownerId;
+
     // 校验必须在写入前跑一遍（dryRun 时只做校验就返回）
     const { def } = await this.validate({
       fromId,
-      toId: input.to,
+      toId,
       typeKey,
       since: input.since ?? null,
       until: input.until ?? null,
     });
 
     const entities = await this.ctx.store.listEntities();
-    const target = entities.find((e) => e.id === input.to);
+    const target = entities.find((e) => e.id === toId);
 
     // 撤销删除时允许按原 id 恢复；其余场景由服务端生成。
     // 显式 id 必须校验格式与唯一性，否则会覆盖已有关系。
@@ -373,7 +414,7 @@ export class GraphService {
       id: relId,
       type: def.key,
       from: fromId,
-      to: input.to,
+      to: toId,
       note: input.note ?? '',
     };
     if (target) rel.to_name = target.name;
@@ -384,9 +425,9 @@ export class GraphService {
 
     if (opts.dryRun) return rel;
 
-    await this.mutateRelations(fromId, (lines) => {
+    await this.mutateRelations(ownerId, (lines) => {
       // 追加到末尾：作者的书写顺序即阅读顺序
-      lines.push({ kind: 'rel', rel: withoutFrom(rel) });
+      lines.push({ kind: 'rel', rel: lineFor(ownerId, rel) });
       return null;
     });
 
@@ -418,9 +459,18 @@ export class GraphService {
     const nextSince = patch.since !== undefined ? patch.since : row.since;
     const nextUntil = patch.until !== undefined ? patch.until : row.until;
 
+    // 改方向 = 翻转箭头（单文件操作）。
+    // 注意方向是「相对关系所在文件」的：先找到它在哪个文件里，
+    // 只有 patch.direction 与当前相对方向不同才真的翻转。
+    const ownerId = await this.ownerFileOf(relationId, row.from_id, row.to_id);
+    const currentRel: 'out' | 'in' = ownerId === row.from_id ? 'out' : 'in';
+    const flip = patch.direction !== undefined && patch.direction !== currentRel;
+    const nextFrom = flip ? row.to_id : row.from_id;
+    const nextTo = flip ? row.from_id : row.to_id;
+
     const { def } = await this.validate({
-      fromId: row.from_id,
-      toId: row.to_id,
+      fromId: nextFrom,
+      toId: nextTo,
       typeKey: nextType,
       since: nextSince,
       until: nextUntil,
@@ -428,13 +478,13 @@ export class GraphService {
     });
 
     const entities = await this.ctx.store.listEntities();
-    const target = entities.find((e) => e.id === row.to_id);
+    const target = entities.find((e) => e.id === nextTo);
 
     const updated: Relation = {
       id: relationId,
       type: def.key,
-      from: row.from_id,
-      to: row.to_id,
+      from: nextFrom,
+      to: nextTo,
       note: patch.note !== undefined ? patch.note : row.note,
     };
     if (target) updated.to_name = target.name;
@@ -451,12 +501,12 @@ export class GraphService {
     if (opts.dryRun) return updated;
 
     let found = false;
-    await this.mutateRelations(row.from_id, (lines) => {
+    await this.mutateRelations(ownerId, (lines) => {
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
         if (line.kind === 'rel' && line.rel.id === relationId) {
           // 就地替换：保持行位置，作者的分组顺序不乱
-          lines[i] = { kind: 'rel', rel: withoutFrom(updated) };
+          lines[i] = { kind: 'rel', rel: lineFor(ownerId, updated) };
           found = true;
           break;
         }
@@ -578,11 +628,12 @@ export class GraphService {
         tx.stage(srcPlan.relPath, srcPlan.before, srcPlan.after);
 
         // 目标文件：加入反向后的一行
-        const reversedRel = {
+        // 反转后的规范关系：起点终点互换，写在新的起点（原终点）文件里
+        const reversedCanonical: Relation = {
           id: relationId,
           type: row.type,
+          from: row.to_id,
           to: row.from_id,
-          to_name: fromEntity.name,
           note: row.note,
           ...(row.since ? { since: row.since } : {}),
           ...(row.until ? { until: row.until } : {}),
@@ -592,7 +643,7 @@ export class GraphService {
         };
 
         const dstPlan = await this.planMutation(row.to_id, (lines) => {
-          lines.push({ kind: 'rel', rel: reversedRel });
+          lines.push({ kind: 'rel', rel: lineFor(row.to_id, reversedCanonical) });
           return null;
         });
         tx.stage(dstPlan.relPath, dstPlan.before, dstPlan.after);
@@ -603,7 +654,7 @@ export class GraphService {
         await this.ctx.indexer.indexRelationsOf(row.from_id);
         await this.ctx.indexer.indexRelationsOf(row.to_id);
 
-        return { ...reversedRel, from: row.to_id } as Relation;
+        return reversedCanonical;
       }),
     );
   }

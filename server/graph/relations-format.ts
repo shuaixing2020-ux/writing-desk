@@ -10,7 +10,11 @@
  *   多行块内容原样保存，没有转义问题，作者也能直接读写。
  *
  * 行语法：
- *   id=<关系id> <类型键> -> <目标条目id> (<目标显示名>) | <属性> | <备注>
+ *   id=<关系id> <类型键> (->|<-) <对方条目id> (<对方显示名>) | <属性> | <备注>
+ *
+ *   `->` 表示本条目指向对方（本条目是起点），`<-` 表示对方指向本条目。
+ *   关系行写在**发起操作的条目**文件里，箭头表达方向 —— 于是在 B 的页面
+ *   建「A 是 B 的师父」只需要改 B 一个文件，不需要事务。
  *
  *   - 用**第一个与第二个** 「空格竖线空格」切分：第 3 段到行尾，可以含 `|`
  *   - 第 2、3 段可省略
@@ -29,8 +33,17 @@ export const KNOWN_PROP_KEYS = ['since', 'until', 'reveal', 'weight'] as const;
  * - `rel`：解析成功，`from` 由所在文件决定，不写在行里
  * - `raw`：注释、空行、或无法解析的行，原样保留
  */
+/** 一行关系在文件里的方向（相对所在文件的条目） */
+export type LineDirection = 'out' | 'in';
+
+/** 解析出来的一行关系：`to` 是「对方条目 id」，方向看 `direction` */
+export type ParsedRelation = Omit<Relation, 'from' | 'to'> & {
+  to: string;
+  direction: LineDirection;
+};
+
 export type RelationLine =
-  | { kind: 'rel'; rel: Omit<Relation, 'from'> }
+  | { kind: 'rel'; rel: ParsedRelation }
   | { kind: 'raw'; text: string };
 
 /** 生成关系 id：`r_` 前缀便于人眼区分条目 id */
@@ -95,7 +108,7 @@ function parseProps(seg: string): {
  * 解析单行。
  * 返回 null 表示这一行不是关系（应作为 raw 保留）。
  */
-function parseLine(line: string): Omit<Relation, 'from'> | null {
+function parseLine(line: string): ParsedRelation | null {
   const parts = splitPipes(line.trim(), 3);
   const head = parts[0];
   let propSeg = parts[1] ?? '';
@@ -114,20 +127,21 @@ function parseLine(line: string): Omit<Relation, 'from'> | null {
     note = '';
   }
 
-  // 主体：id=... <类型> -> <目标id> (显示名)
-  // id 与类型之间至少一个空格；类型不含空格；-> 两侧可以有空格
-  const m = /^id=(\S+)\s+(\S+)\s*->\s*([0-9A-Za-z_-]+)\s*(?:\(([^)]*)\))?\s*$/.exec(head);
+  // 主体：id=... <类型> (->|<-) <对方id> (显示名)
+  // id 与类型之间至少一个空格；类型不含空格；箭头两侧可以有空格
+  const m = /^id=(\S+)\s+(\S+)\s*(->|<-)\s*([0-9A-Za-z_-]+)\s*(?:\(([^)]*)\))?\s*$/.exec(head);
   if (!m) return null;
 
-  const [, id, type, to, toName] = m;
+  const [, id, type, arrow, to, toName] = m;
   if (!id || !type || !to) return null;
 
   const { known, extra } = parseProps(propSeg);
 
-  const rel: Omit<Relation, 'from'> = {
+  const rel: ParsedRelation = {
     id,
     type,
     to,
+    direction: arrow === '<-' ? 'in' : 'out',
     note: note.trim(),
   };
   if (toName !== undefined) rel.to_name = toName.trim();
@@ -167,8 +181,9 @@ export function parseRelations(block: string): RelationLine[] {
 }
 
 /** 序列化单个关系为一行（规范化形式） */
-export function stringifyRelation(rel: Omit<Relation, 'from'>): string {
-  let line = `id=${rel.id} ${rel.type} -> ${rel.to}`;
+export function stringifyRelation(rel: ParsedRelation): string {
+  const arrow = rel.direction === 'in' ? '<-' : '->';
+  let line = `id=${rel.id} ${rel.type} ${arrow} ${rel.to}`;
   if (rel.to_name) line += ` (${rel.to_name})`;
 
   const props: string[] = [];
@@ -210,8 +225,50 @@ export function stringifyRelations(lines: RelationLine[]): string {
 }
 
 /** 只取可用的关系（丢掉 raw 行），便于业务逻辑使用 */
-export function relationsOnly(lines: RelationLine[]): Array<Omit<Relation, 'from'>> {
-  return lines.filter((l): l is { kind: 'rel'; rel: Omit<Relation, 'from'> } => l.kind === 'rel').map((l) => l.rel);
+export function relationsOnly(lines: RelationLine[]): ParsedRelation[] {
+  return lines
+    .filter((l): l is { kind: 'rel'; rel: ParsedRelation } => l.kind === 'rel')
+    .map((l) => l.rel);
+}
+
+/**
+ * 把「文件里的相对行」还原成「规范关系方向」。
+ * direction=out 表示本条目是起点，in 表示本条目是终点。
+ */
+export function canonicalize(
+  ownerId: string,
+  rel: ParsedRelation,
+): { from: string; to: string } {
+  return rel.direction === 'in' ? { from: rel.to, to: ownerId } : { from: ownerId, to: rel.to };
+}
+
+/**
+ * 把「规范关系」写成某个文件里的一行。
+ * 关系行始终写在发起操作的条目文件里，箭头表达方向。
+ */
+export function lineFor(ownerId: string, rel: Relation): ParsedRelation {
+  const { from, to } = rel;
+  const base = {
+    id: rel.id,
+    type: rel.type,
+    note: rel.note ?? '',
+    ...(rel.since ? { since: rel.since } : {}),
+    ...(rel.until ? { until: rel.until } : {}),
+    ...(rel.reveal ? { reveal: rel.reveal } : {}),
+    ...(rel.weight !== undefined && rel.weight !== null ? { weight: rel.weight } : {}),
+    ...(rel.extra_props ? { extra_props: rel.extra_props } : {}),
+  };
+
+  if (from === ownerId) {
+    return {
+      ...base,
+      to,
+      direction: 'out',
+      ...(rel.to_name ? { to_name: rel.to_name } : {}),
+    };
+  }
+  // 本条目是终点：写成 `<- 对方`
+  return { ...base, to: from, direction: 'in' };
 }
 
 /** 判断某个 raw 行是否"看起来像关系但解析失败"（用于 lint 报告，与普通注释区分） */
@@ -220,5 +277,5 @@ export function looksLikeBrokenRelation(line: RelationLine): boolean {
   const t = line.text.trim();
   if (!t || t.startsWith('#')) return false;
   // 含有 id= 或 -> 却没解析成功，多半是写错了
-  return t.includes('id=') || t.includes('->');
+  return t.includes('id=') || t.includes('->') || t.includes('<-');
 }
