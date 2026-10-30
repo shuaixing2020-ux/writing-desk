@@ -21,6 +21,8 @@ import { DOC_STATUS_LABELS } from '../../../../shared/types.ts';
 import { childrenOf } from '../../lib/store.ts';
 import { h, fmtNum } from '../../lib/dom.ts';
 import { ICONS, emptyBlock, errText, panelShell, toast } from './shared.ts';
+import { createMindmap, type MindmapHandle } from '../outline-mindmap.ts';
+import { loadPrefs, savePrefs, type OutlineMode } from '../../lib/ui-prefs.ts';
 import {
   createSibling,
   indent,
@@ -130,6 +132,58 @@ export const panel: PanelDef = {
     let lastState: AppState | null = null;
     let lastRenderedKey = '';
 
+    // ── 视图切换：列表 / 思维导图（O3/O4） ──
+    const isNarrowScreen = (): boolean => window.matchMedia('(max-width: 960px)').matches;
+    let mode: OutlineMode = isNarrowScreen() ? 'list' : loadPrefs().outlineMode;
+    let mindmap: MindmapHandle | null = null;
+
+    const listBtn = h('button', { class: 'p-outline-mode', type: 'button' }, '列表');
+    const mapBtn = h('button', { class: 'p-outline-mode', type: 'button' }, '导图');
+    const modeBar = h('div', { class: 'p-outline-modes', role: 'tablist' }, listBtn, mapBtn);
+    const content = h('div', { class: 'p-outline-content' });
+
+    const syncModeButtons = (): void => {
+      listBtn.classList.toggle('active', mode === 'list');
+      mapBtn.classList.toggle('active', mode === 'map');
+      listBtn.setAttribute('aria-selected', String(mode === 'list'));
+      mapBtn.setAttribute('aria-selected', String(mode === 'map'));
+      // 手机上只提供列表视图
+      modeBar.classList.toggle('hidden', isNarrowScreen());
+    };
+
+    const setMode = (next: OutlineMode): void => {
+      if (isNarrowScreen() && next === 'map') return;
+      if (mode === next) return;
+      mode = next;
+      savePrefs({ ...loadPrefs(), outlineMode: next });
+      syncModeButtons();
+      if (lastState) render(lastState);
+    };
+
+    listBtn.addEventListener('click', () => setMode('list'));
+    mapBtn.addEventListener('click', () => setMode('map'));
+
+    // 快捷键 ⌘⇧O：在大纲面板里切换列表 / 导图
+    const onToggleMode = (): void => {
+      setMode(mode === 'map' ? 'list' : 'map');
+    };
+    window.addEventListener('writingdesk:toggle-outline-mode', onToggleMode);
+
+    // 检查器变宽/变窄后重新判断「面板偏窄」提示
+    const onWidthChanged = (): void => {
+      if (mode !== 'map' || !lastState) return;
+      // 宽度事件是在样式生效前发出的，此刻 clientWidth 还是旧值。
+      // 等下一帧再量一次，否则「切到宽栏」之后提示不会消失。
+      requestAnimationFrame(() => {
+        const hint = content.querySelector<HTMLElement>('.mm-narrow-hint');
+        if (hint) hint.classList.toggle('hidden', content.clientWidth >= 480);
+      });
+    };
+    window.addEventListener('writingdesk:inspector-width', onWidthChanged);
+    window.addEventListener('resize', onWidthChanged);
+
+    shell.body.appendChild(modeBar);
+    shell.body.appendChild(content);
     shell.body.appendChild(h('div', { class: 'p-outline-summary-host' }));
 
     const activeEl = (): HTMLElement | null => document.activeElement as HTMLElement | null;
@@ -243,13 +297,54 @@ export const panel: PanelDef = {
 
     function render(state: AppState): void {
       lastState = state;
+      syncModeButtons();
+
+      // 导图模式：交给独立组件，列表 DOM 整体让位
+      if (mode === 'map' && !isNarrowScreen()) {
+        content.textContent = '';
+        // 检查器太窄时导图看不清：给一条提示 + 一键切宽栏（O4）。
+        // 宽度要等布局完成才读得到，所以先挂上、下一帧再决定显示与否。
+        const hint = h(
+          'div',
+          { class: 'mm-narrow-hint hidden' },
+          h('span', null, '面板偏窄，导图看不清'),
+          h(
+            'button',
+            {
+              class: 'btn sm',
+              type: 'button',
+              onclick: () => {
+                window.dispatchEvent(
+                  new CustomEvent('writingdesk:set-inspector-width', { detail: { width: 560 } }),
+                );
+              },
+            },
+            '切到宽栏',
+          ),
+        );
+        content.appendChild(hint);
+        requestAnimationFrame(() => {
+          if (content.isConnected) hint.classList.toggle('hidden', content.clientWidth >= 480);
+        });
+
+        if (!mindmap) mindmap = createMindmap(ctx);
+        content.appendChild(mindmap.el);
+        mindmap.update(state);
+        lastRenderedKey = stateKey(state);
+        return;
+      }
+      if (mindmap) {
+        mindmap.destroy();
+        mindmap = null;
+      }
+
       const rows = flatten(state);
-      const scrollTop = shell.body.scrollTop;
+      const scrollTop = content.scrollTop;
       const nodes = state.nodes;
 
       if (rows.length === 0) {
-        shell.body.textContent = '';
-        shell.body.appendChild(
+        content.textContent = '';
+        content.appendChild(
           emptyBlock({
             icon: ICONS.outline,
             title: '还没有任何结构',
@@ -282,9 +377,9 @@ export const panel: PanelDef = {
         list.appendChild(renderRow(row, state));
       }
 
-      shell.body.textContent = '';
-      shell.body.append(head, list);
-      shell.body.scrollTop = scrollTop;
+      content.textContent = '';
+      content.append(head, list);
+      content.scrollTop = scrollTop;
 
       for (const ta of Array.from(list.querySelectorAll<HTMLTextAreaElement>('.p-outline-summary'))) {
         autoGrow(ta);
@@ -540,6 +635,11 @@ export const panel: PanelDef = {
         render(state);
       },
       destroy(): void {
+        window.removeEventListener('writingdesk:toggle-outline-mode', onToggleMode);
+        window.removeEventListener('writingdesk:inspector-width', onWidthChanged);
+        window.removeEventListener('resize', onWidthChanged);
+        mindmap?.destroy();
+        mindmap = null;
         container.textContent = '';
       },
     };

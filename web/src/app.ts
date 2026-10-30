@@ -218,7 +218,13 @@ async function main(): Promise<void> {
     handlers: {
       onToggleSidebar: () => actions.toggleSidebar(),
       onToggleInspector: () => toggleInspector(),
-      onInspectorWidth: (width) => persistUiPrefs({ inspectorWidth: width }),
+      onInspectorWidth: (width) => {
+        persistUiPrefs({ inspectorWidth: width });
+        // 面板可能需要按新宽度调整（如导图的「面板偏窄」提示）
+        window.dispatchEvent(
+          new CustomEvent('writingdesk:inspector-width', { detail: { width } }),
+        );
+      },
       onOpenGraph: () => openGraphView(),
       onToggleFocus: () => actions.toggleFocus(),
       onProjectMenu: () => openProjectSwitcher(),
@@ -243,6 +249,21 @@ async function main(): Promise<void> {
 
   // 恢复上次的检查器宽度（≤960px 时 shell 内部会忽略）
   shell.setInspectorWidth(uiPrefs.inspectorWidth);
+
+  // 面板里想「一键切宽栏」时发这个事件（比如导图提示面板偏窄）
+  const onSetInspectorWidth = (ev: Event): void => {
+    const width = (ev as CustomEvent<{ width: number }>).detail?.width;
+    if (typeof width !== 'number') return;
+    const applied = clampInspectorWidth(width, window.innerWidth);
+    // setInspectorWidth 走的是「不通知」的内部路径，这里补一次广播，
+    // 否则面板不知道自己已经变宽（导图的窄栏提示就不会消失）。
+    shell?.setInspectorWidth(applied);
+    persistUiPrefs({ inspectorWidth: applied });
+    window.dispatchEvent(
+      new CustomEvent('writingdesk:inspector-width', { detail: { width: applied } }),
+    );
+  };
+  window.addEventListener('writingdesk:set-inspector-width', onSetInspectorWidth);
 
   // 窗口变小导致放不下时自动收窄，不能让检查器把正文挤没
   let resizeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1583,6 +1604,15 @@ async function main(): Promise<void> {
     if (mod && !ev.shiftKey && ev.key.toLowerCase() === 'j') {
       ev.preventDefault();
       toggleInspector();
+      return;
+    }
+    if (mod && ev.shiftKey && ev.key.toLowerCase() === 'o') {
+      ev.preventDefault();
+      // 面板没开就先开大纲
+      if (!store.state.inspectorOpen || store.state.rightPanel !== 'outline') {
+        actions.setRightPanel('outline');
+      }
+      window.dispatchEvent(new CustomEvent('writingdesk:toggle-outline-mode'));
       return;
     }
     if (mod && ev.shiftKey && ev.key.toLowerCase() === 'e') {

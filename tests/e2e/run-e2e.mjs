@@ -862,6 +862,241 @@ async function main() {
       assertEq(current, '大纲章', '左侧目录的当前项应同步为「大纲章」');
     });
 
+    // ─────────── 【7】思维导图（O3） ───────────
+
+    console.log('\n【7】思维导图');
+
+    const mmVol = await apiPost(`/api/projects/${projectId}/nodes`, {
+      kind: 'volume',
+      parent_id: null,
+      title: '导图卷',
+    });
+    const mmChap = await apiPost(`/api/projects/${projectId}/nodes`, {
+      kind: 'chapter',
+      parent_id: mmVol.id,
+      title: '导图章',
+    });
+    await apiPost(`/api/projects/${projectId}/nodes`, {
+      kind: 'scene',
+      parent_id: mmChap.id,
+      title: '导图场甲',
+    });
+    await apiPost(`/api/projects/${projectId}/nodes`, {
+      kind: 'scene',
+      parent_id: mmChap.id,
+      title: '导图场乙',
+    });
+
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(2400);
+    await page.locator('.inspector-tabs button[data-panel="outline"]').click();
+    await page.waitForTimeout(800);
+    await page.locator('.p-outline-mode', { hasText: '导图' }).click();
+    await page.waitForTimeout(1200);
+
+    const mmFocusTitle = () =>
+      page.evaluate(() => document.querySelector('.mm-capsule.focused .mm-title')?.textContent ?? null);
+    const mmTitles = () =>
+      page.evaluate(() => [...document.querySelectorAll('.mm-title')].map((e) => e.textContent));
+
+    await check('导图渲染：胶囊 + 连线 + 类型区分', async () => {
+      const info = await page.evaluate(() => ({
+        caps: document.querySelectorAll('.mm-capsule').length,
+        children: document.querySelectorAll('.mm-children').length,
+        kinds: [...document.querySelectorAll('.mm-kind')].map((e) => e.textContent),
+        volumeStyled: !!document.querySelector('.mm-capsule.k-volume'),
+      }));
+      assert(info.caps > 0, '没有渲染出节点');
+      assert(info.children > 0, '没有渲染出层级容器（连线靠它的伪元素画）');
+      assert(info.kinds.includes('卷') && info.kinds.includes('章') && info.kinds.includes('场'),
+        `类型标记不全：${info.kinds.join(',')}`);
+      assert(info.volumeStyled, '卷节点缺少样式区分');
+    });
+
+    await check('导图键盘：右进子节点、左回父节点、上下走同级', async () => {
+      // 先聚焦「导图卷」
+      await page.evaluate(() => {
+        const caps = [...document.querySelectorAll('.mm-capsule')];
+        const el = caps.find((c) => c.textContent?.includes('导图卷'));
+        el?.click();
+      });
+      await page.waitForTimeout(500);
+      assertEq(await mmFocusTitle(), '导图卷', '起点应是「导图卷」');
+
+      await page.keyboard.press('ArrowRight');
+      await page.waitForTimeout(400);
+      assertEq(await mmFocusTitle(), '导图章', '右方向键应进入第一个子节点');
+
+      await page.keyboard.press('ArrowDown');
+      await page.waitForTimeout(300);
+      await page.keyboard.press('ArrowLeft');
+      await page.waitForTimeout(400);
+      // 「导图章」的父节点是「导图卷」
+      assertEq(await mmFocusTitle(), '导图卷', '左方向键应回到父节点');
+    });
+
+    await check('导图 Enter 新建同级并就地改名', async () => {
+      // 聚焦到「导图场乙」，Enter 新建同级
+      await page.evaluate(() => {
+        const caps = [...document.querySelectorAll('.mm-capsule')];
+        caps.find((c) => c.textContent?.includes('导图章'))?.click();
+      });
+      await page.waitForTimeout(400);
+      await page.keyboard.press('ArrowRight');
+      await page.waitForTimeout(300);
+      await page.keyboard.press('ArrowDown');
+      await page.waitForTimeout(400);
+      assertEq(await mmFocusTitle(), '导图场乙', '前置条件：应聚焦到导图场乙');
+
+      const before = (await mmTitles()).length;
+      await page.keyboard.press('Enter');
+      await page.waitForTimeout(1600);
+
+      const editing = await page.evaluate(() => !!document.querySelector('.mm-rename'));
+      assert(editing, '新建后应进入就地改名');
+
+      await page.keyboard.type('导图场丙', { delay: 30 });
+      await page.keyboard.press('Enter');
+      await page.waitForTimeout(1700);
+
+      const after = await mmTitles();
+      assert(after.length === before + 1, `应多一个节点：${before} → ${after.length}`);
+      assert(after.includes('导图场丙'), `改名未生效：${after.join('/')}`);
+    });
+
+    await check('导图折叠/展开与删除撤销', async () => {
+      // 折叠「导图章」：场景应消失
+      await page.evaluate(() => {
+        const nodes = [...document.querySelectorAll('.mm-node')];
+        const target = nodes.find((n) => n.querySelector('.mm-capsule')?.textContent?.includes('导图章'));
+        target?.querySelector('.mm-toggle')?.click();
+      });
+      await page.waitForTimeout(600);
+      const collapsedCount = await page.evaluate(
+        () => document.querySelectorAll('.mm-node.collapsed').length,
+      );
+      assert(collapsedCount >= 1, '折叠后应有 collapsed 节点');
+      const hidden = await mmTitles();
+      assert(!hidden.includes('导图场甲'), '折叠后子节点不应显示');
+
+      // 展开回来
+      await page.evaluate(() => {
+        const nodes = [...document.querySelectorAll('.mm-node')];
+        const target = nodes.find((n) => n.querySelector('.mm-capsule')?.textContent?.includes('导图章'));
+        target?.querySelector('.mm-toggle')?.click();
+      });
+      await page.waitForTimeout(600);
+      assert((await mmTitles()).includes('导图场甲'), '展开后子节点应回来');
+    });
+
+    await check('导图与列表共享选中项，切换后保持', async () => {
+      await page.evaluate(() => {
+        const caps = [...document.querySelectorAll('.mm-capsule')];
+        caps.find((c) => c.textContent?.includes('导图章'))?.click();
+      });
+      await page.waitForTimeout(1200);
+
+      await page.locator('.p-outline-mode', { hasText: '列表' }).click();
+      await page.waitForTimeout(900);
+      const listCurrent = await page.evaluate(
+        () => document.querySelector('.p-outline-item.current .p-outline-name')?.value ?? null,
+      );
+      assertEq(listCurrent, '导图章', '切回列表后当前项应保持一致');
+
+      // 切回导图，选中项仍是它
+      await page.locator('.p-outline-mode', { hasText: '导图' }).click();
+      await page.waitForTimeout(1000);
+      const current = await page.evaluate(
+        () => document.querySelector('.mm-capsule.current .mm-title')?.textContent ?? null,
+      );
+      assertEq(current, '导图章', '切回导图后当前项应保持一致');
+    });
+
+    await check('导图偏好持久化（刷新后仍是导图）', async () => {
+      await page.reload({ waitUntil: 'networkidle' });
+      await page.waitForTimeout(2600);
+      await page.locator('.inspector-tabs button[data-panel="outline"]').click();
+      await page.waitForTimeout(900);
+      assert((await page.locator('.mm-root').count()) === 1, '刷新后应仍在导图视图');
+
+      // 收尾：切回列表，避免影响后续
+      await page.locator('.p-outline-mode', { hasText: '列表' }).click();
+      await page.waitForTimeout(700);
+    });
+
+    // ─────────── 【8】视图切换与联动（O4） ───────────
+
+    console.log('\n【8】视图切换与联动');
+
+    await page.locator('.inspector-tabs button[data-panel="outline"]').click();
+    await page.waitForTimeout(700);
+
+    await check('⌘⇧O 在列表与导图之间切换', async () => {
+      const isMap = () => page.evaluate(() => !!document.querySelector('.mm-root'));
+      const start = await isMap();
+      await page.keyboard.press('ControlOrMeta+Shift+O');
+      await page.waitForTimeout(900);
+      const afterFirst = await isMap();
+      assert(afterFirst !== start, '快捷键没有切换视图');
+
+      await page.keyboard.press('ControlOrMeta+Shift+O');
+      await page.waitForTimeout(900);
+      assertEq(await isMap(), start, '再按一次应切回原视图');
+    });
+
+    await check('面板偏窄时提示切宽栏，一键生效', async () => {
+      await page.locator('.inspector-preset', { hasText: '窄' }).click();
+      await page.waitForTimeout(500);
+      // 确保在导图
+      if ((await page.locator('.mm-root').count()) === 0) {
+        await page.locator('.p-outline-mode', { hasText: '导图' }).click();
+        await page.waitForTimeout(900);
+      }
+
+      // 用可见性判断：隐藏的提示元素仍在 DOM 里（count 会误判）
+      const hintVisible = await page.locator('.mm-narrow-hint').isVisible();
+      assert(hintVisible, '380px 宽时应出现「面板偏窄」提示');
+
+      await page.locator('.mm-narrow-hint button').click();
+      await page.waitForTimeout(900);
+      const width = await page.evaluate(() =>
+        Math.round(document.querySelector('.inspector')?.getBoundingClientRect().width ?? 0),
+      );
+      assert(width >= 500, `点「切到宽栏」后应变宽，实际 ${width}`);
+      assert(
+        !(await page.locator('.mm-narrow-hint').isVisible()),
+        '宽栏后提示应消失',
+      );
+    });
+
+    await check('切换章节后导图高亮并滚到该节点', async () => {
+      // 在列表里选中一个场景，再切到导图
+      await page.locator('.p-outline-mode', { hasText: '列表' }).click();
+      await page.waitForTimeout(800);
+
+      const picked = await page.evaluate(() => {
+        const inputs = [...document.querySelectorAll('.p-outline-name')];
+        const target = inputs.find((i) => i.dataset.kind === 'scene' && i.value);
+        if (!target) return null;
+        target.focus();
+        return target.value;
+      });
+      assert(picked, '没有可选的场景行');
+      await page.waitForTimeout(1000);
+
+      await page.locator('.p-outline-mode', { hasText: '导图' }).click();
+      await page.waitForTimeout(1200);
+
+      const current = await page.evaluate(
+        () => document.querySelector('.mm-capsule.current .mm-title')?.textContent ?? null,
+      );
+      assertEq(current, picked, '导图应高亮刚选中的场景');
+
+      // 收尾：切回列表
+      await page.locator('.p-outline-mode', { hasText: '列表' }).click();
+      await page.waitForTimeout(600);
+    });
+
     await check('无未捕获的运行时错误', async () => {
       // 过滤掉网络类噪音（服务端某些路由可能还在开发）
       const real = consoleErrors.filter(

@@ -716,7 +716,9 @@ body.has-overlay {
 .inspector-inner {
   display: flex;
   flex-direction: column;
-  width: var(--inspector-w);
+  /* 跟随可拖拽宽度：只改网格列而这里写死 300 的话，
+     检查器变宽了但里面内容还挤在 300px 里（导图提示就一直说面板太窄）。 */
+  width: var(--inspector-w-cur, var(--inspector-w));
   height: 100%;
   min-height: 0;
 }
