@@ -530,3 +530,28 @@ describe('发起方与方向（A3）', () => {
     }
   });
 });
+
+describe('删除写在终点文件里的关系', () => {
+  test('remove 能找到 `<-` 那一行并删掉（回归）', async () => {
+    const c = await setup();
+    try {
+      // 写在林远(a)文件里的 `<-`：规范方向是 老掌门(b) → 林远(a)
+      const rel = await c.graph.create(c.entities.a, {
+        type: 'mentor',
+        other: c.entities.b,
+        direction: 'in',
+      });
+
+      await c.graph.remove(rel.id);
+
+      const aView = await c.graph.list(c.entities.a);
+      const bView = await c.graph.list(c.entities.b);
+      assert.equal(aView.in.length, 0, '林远不应再有入向关系');
+      assert.equal(bView.out.length, 0, '老掌门不应再有出向关系');
+      assert.equal(c.graph ? (await new GraphService((await c.app.openProject('p'))).list(c.entities.a)).out.length : 0, 0);
+    } finally {
+      await c.app.closeAll();
+      await fs.rm(c.dir, { recursive: true, force: true });
+    }
+  });
+});

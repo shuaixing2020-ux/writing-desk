@@ -2339,3 +2339,55 @@
 .mm-node.collapsed > .mm-capsule {
   border-style: dashed;
 }
+
+/* ── 一句话建关系（R2） ── */
+.p-rel-builder {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: var(--sp-2) 0 var(--sp-3);
+  border-bottom: 1px dashed var(--paper-3);
+  margin-bottom: var(--sp-2);
+}
+.p-rel-builder-line {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.p-rel-builder-line .select {
+  min-width: 0;
+  flex: 1;
+  font-size: var(--fs-xs);
+  padding: 3px 4px;
+}
+.p-rel-builder-word-sep {
+  font-size: var(--fs-xs);
+  color: var(--ink-4);
+  flex: none;
+}
+.p-rel-builder-add {
+  flex: none;
+}
+.p-rel-builder-preview {
+  font-size: var(--fs-xs);
+  color: var(--ink-4);
+  line-height: 1.5;
+  min-height: 1em;
+}
+.p-rel-builder-error {
+  font-size: var(--fs-xs);
+  color: var(--danger);
+  line-height: 1.5;
+}
+.p-rel-builder-error.hidden {
+  display: none;
+}
+
+/* 关系行里那句话 */
+.p-rel-sentence {
+  font-size: var(--fs-xs);
+  color: var(--ink-3);
+  line-height: 1.5;
+  padding-left: 2px;
+}

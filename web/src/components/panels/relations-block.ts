@@ -22,6 +22,8 @@ import type {
 import { ENTITY_TYPE_LABELS } from '../../../../shared/types.ts';
 import { h } from '../../lib/dom.ts';
 import { historyFor } from '../graph/history.ts';
+import { renderRelationBuilder } from '../relation-builder.ts';
+import { relationSentence } from '../../lib/relation-sentence.ts';
 import { confirmDanger, errText, toast } from './shared.ts';
 
 export interface RelationSectionOptions {
@@ -202,6 +204,21 @@ export function renderRelationSection(opts: RelationSectionOptions): HTMLElement
       return;
     }
 
+    // ── 一句话建关系（R2）──
+    // 作者不需要理解起点终点：选「谁 是 谁的 什么人」就够了。
+    host.appendChild(
+      renderRelationBuilder({
+        ctx,
+        current: entity,
+        entities: opts.entities,
+        types,
+        onCreated: async () => {
+          await load();
+          opts.onChanged();
+        },
+      }),
+    );
+
     // ── 出向：我指向谁 ──
     const outGroup = h('div', { class: 'p-rel-group' });
     outGroup.appendChild(
@@ -209,34 +226,15 @@ export function renderRelationSection(opts: RelationSectionOptions): HTMLElement
         'div',
         { class: 'p-rel-group-head' },
         h('span', null, `指向 · ${view.out.length}`),
-        h(
-          'button',
-          {
-            class: 'p-rel-add',
-            type: 'button',
-            title: '新增关系',
-            onclick: () => {
-              formOpen = true;
-              editingId = null;
-              render();
-            },
-          },
-          '＋',
-        ),
       ),
     );
 
-    if (view.out.length === 0 && !formOpen) {
+    if (view.out.length === 0) {
       outGroup.appendChild(h('div', { class: 'p-field-empty' }, '还没有指向任何条目。'));
     }
 
     for (const rel of view.out) {
       outGroup.appendChild(renderRow(rel, 'out'));
-    }
-
-    // 新增表单
-    if (formOpen && editingId === null) {
-      outGroup.appendChild(renderForm(null));
     }
 
     host.appendChild(outGroup);
@@ -289,6 +287,29 @@ export function renderRelationSection(opts: RelationSectionOptions): HTMLElement
         nameBtn,
       ),
     );
+
+    // 一句话形式：站在当前条目视角读，不用理解箭头
+    // 例：我的师父是 老掌门 / 我的徒弟是 林远
+    if (!rel.dangling) {
+      const nameOf = (id: string): string =>
+        opts.entities.find((e) => e.id === id)?.name ?? id;
+      const rolesOf = (type: string): { from_role: string; to_role: string; symmetric: boolean } => {
+        const d = typeOf(type);
+        return {
+          from_role: d?.from_role ?? d?.label ?? type,
+          to_role: d?.to_role ?? d?.inverse_label ?? type,
+          symmetric: d?.symmetric ?? false,
+        };
+      };
+      const sentence = relationSentence(
+        entity.id,
+        { from: rel.from ?? entity.id, to: rel.to, type: rel.type },
+        nameOf,
+        (t) => typeOf(t)?.label ?? t,
+        rolesOf,
+      );
+      row.appendChild(h('div', { class: 'p-rel-sentence truncate' }, sentence));
+    }
 
     // 第二行：区间 + 备注
     const meta: string[] = [];

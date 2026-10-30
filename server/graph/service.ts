@@ -532,8 +532,12 @@ export class GraphService {
       throw new RelationError('rel_not_found', `关系不存在：${relationId}`, 404);
     }
 
+    // 关系行写在「发起操作的条目」文件里，可能在起点也可能在终点，
+    // 只去 from_id 的文件找会漏掉 `<-` 写法（删不掉且报 409）。
+    const ownerId = await this.ownerFileOf(relationId, row.from_id, row.to_id);
+
     let found = false;
-    await this.mutateRelations(row.from_id, (lines) => {
+    await this.mutateRelations(ownerId, (lines) => {
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
         if (line.kind === 'rel' && line.rel.id === relationId) {

@@ -396,19 +396,19 @@ async function main() {
       assert(hasRel > 0, '未渲染关系分组');
     });
 
-    await check('新增关系表单按类型过滤', async () => {
-      const addBtn = page.locator('.p-rel-add').first();
-      if ((await addBtn.count()) === 0) return;
-      await addBtn.click();
-      await page.waitForTimeout(600);
-      const opts = await page.evaluate(() => {
-        const sel = document.querySelector('.p-rel-form select');
+    await check('一句话建关系：角色词按端点类型过滤', async () => {
+      // 这一段可能还没打开任何条目详情；没构建器就跳过，
+      // 真正的构建器行为在【9】里覆盖。
+      if ((await page.locator('.p-rel-builder').count()) === 0) return;
+
+      const words = await page.evaluate(() => {
+        const sel = document.querySelector('.p-rel-builder-word');
         return sel ? [...sel.options].map((o) => o.textContent) : [];
       });
-      assert(opts.length > 0, '类型下拉为空');
-      // 角色可用的类型应包含师徒，但不包含「导致」（只能事件→事件）
-      assert(opts.includes('师徒'), `类型下拉应含「师徒」，实际：${opts.join(', ')}`);
-      assert(!opts.includes('导致'), `角色不应能选「导致」，实际：${opts.join(', ')}`);
+      assert(words.length > 0, '角色词下拉为空');
+      // 角色之间可用的词应包含师徒，但不包含「导致」（只能事件→事件）
+      assert(words.includes('师父'), `应含「师父」，实际：${words.join(', ')}`);
+      assert(!words.includes('起因'), `角色之间不该出现「起因」，实际：${words.join(', ')}`);
     });
 
     await check('命令面板：点击命令项能执行', async () => {
@@ -1095,6 +1095,164 @@ async function main() {
       // 收尾：切回列表
       await page.locator('.p-outline-mode', { hasText: '列表' }).click();
       await page.waitForTimeout(600);
+    });
+
+    // ─────────── 【9】一句话建关系（R2） ───────────
+
+    console.log('\n【9】一句话建关系');
+
+    const r2A = await apiPost(`/api/projects/${projectId}/entities`, { type: 'character', name: '甲师父' });
+    const r2B = await apiPost(`/api/projects/${projectId}/entities`, { type: 'character', name: '乙徒弟' });
+
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(2400);
+    await page.locator('.inspector-tabs button[data-panel="bible"]').click();
+    await page.waitForTimeout(900);
+
+    /** 打开某个设定条目的详情 */
+    const openEntity = async (name) => {
+      // 详情页会顶掉列表，先回列表才点得到别的条目
+      if ((await page.locator('.p-back').count()) > 0) {
+        await page.locator('.p-back').first().click();
+        await page.waitForTimeout(700);
+      }
+      await page.locator('.panel').locator(`text=${name}`).first().click();
+      await page.waitForTimeout(1400);
+    };
+
+    /** 在构建器里选好三个下拉并提交 */
+    const buildRelation = async (xName, yName, word) => {
+      const ok = await page.evaluate(
+        ({ xName, yName, word }) => {
+          const x = document.querySelector('.p-rel-builder-x');
+          const y = document.querySelector('.p-rel-builder-y');
+          const w = document.querySelector('.p-rel-builder-word');
+          if (!x || !y || !w) return false;
+
+          const setSel = (sel, text) => {
+            const opt = [...sel.options].find((o) => o.textContent === text);
+            if (!opt) return false;
+            sel.value = opt.value;
+            sel.dispatchEvent(new Event('change'));
+            return true;
+          };
+          if (!setSel(x, xName)) return false;
+          return true;
+        },
+        { xName, yName, word },
+      );
+      assert(ok, `构建器里找不到「${xName}」`);
+
+      // X 变了之后 Y 的选项会重填，必须等一拍再选
+      await page.waitForTimeout(300);
+      const ok2 = await page.evaluate(
+        ({ yName, word }) => {
+          const y = document.querySelector('.p-rel-builder-y');
+          const w = document.querySelector('.p-rel-builder-word');
+          const setSel = (sel, text) => {
+            const opt = [...sel.options].find((o) => o.textContent === text);
+            if (!opt) return false;
+            sel.value = opt.value;
+            sel.dispatchEvent(new Event('change'));
+            return true;
+          };
+          if (!setSel(y, yName)) return false;
+          return true;
+        },
+        { yName, word },
+      );
+      assert(ok2, `构建器里找不到「${yName}」`);
+
+      await page.waitForTimeout(300);
+      const ok3 = await page.evaluate((word) => {
+        const w = document.querySelector('.p-rel-builder-word');
+        const opt = [...w.options].find((o) => o.textContent === word);
+        if (!opt) return false;
+        w.value = opt.value;
+        w.dispatchEvent(new Event('change'));
+        return true;
+      }, word);
+      assert(ok3, `角色词里找不到「${word}」`);
+      return page.locator('.p-rel-builder-preview').textContent();
+    };
+
+    await check('一句话建关系：预览显示方向，提交后两端都看得到', async () => {
+      await openEntity('乙徒弟');
+
+      // 在「乙徒弟」页面说「甲师父 是 乙徒弟 的 师父」
+      const preview = await buildRelation('甲师父', '乙徒弟', '师父');
+      assert(/甲师父 → 乙徒弟/.test(preview), `预览方向不对：${preview}`);
+
+      await page.locator('.p-rel-builder-add').click();
+      await page.waitForTimeout(1800);
+
+      // 当前页面（乙徒弟）应出现一句话：我的师父是 甲师父
+      const sentence = await page.evaluate(
+        () => document.querySelector('.p-rel-sentence')?.textContent ?? '',
+      );
+      assert(sentence.includes('我的师父是 甲师父'), `详情页未显示一句话：${sentence}`);
+
+      // 服务端：甲师父 → 乙徒弟
+      const rels = await (
+        await fetch(`${BASE}/api/projects/${projectId}/entities/${r2B.id}/relations`)
+      ).json();
+      assert(rels.in.length === 1 && rels.in[0].from === r2A.id, '方向不对：应为甲师父→乙徒弟');
+
+      // 打开另一端，应显示「我的徒弟是 乙徒弟」
+      await openEntity('甲师父');
+      const other = await page.evaluate(
+        () => document.querySelector('.p-rel-sentence')?.textContent ?? '',
+      );
+      assert(other.includes('我的徒弟是 乙徒弟'), `另一端显示不对：${other}`);
+    });
+
+    await check('重复建同一条关系被拒绝且就地提示', async () => {
+      await openEntity('乙徒弟');
+      await buildRelation('甲师父', '乙徒弟', '师父');
+      await page.locator('.p-rel-builder-add').click();
+      await page.waitForTimeout(1600);
+
+      const err = await page.evaluate(
+        () => document.querySelector('.p-rel-builder-error')?.textContent ?? '',
+      );
+      assert(/已经存在/.test(err), `重复关系应就地提示，实际：${err || '（无提示）'}`);
+    });
+
+    await check('师徒互为师父被拒绝（会成环）', async () => {
+      // 在乙徒弟页面建「乙徒弟 是 甲师父 的 师父」→ 甲师父→乙徒弟 已存在，反向会成环
+      await openEntity('甲师父');
+      await buildRelation('乙徒弟', '甲师父', '师父');
+      await page.locator('.p-rel-builder-add').click();
+      await page.waitForTimeout(1600);
+
+      const err = await page.evaluate(
+        () => document.querySelector('.p-rel-builder-error')?.textContent ?? '',
+      );
+      assert(err.length > 0, '互为师父应被拒绝并提示');
+      assert(/循环|已经存在/.test(err), `提示内容不对：${err}`);
+    });
+
+    await check('删除关系后两端都消失', async () => {
+      await openEntity('甲师父');
+      // 精确点「我的徒弟是 乙徒弟」那一行的删除按钮，
+      // 不能取第一行：面板里可能还有别的条目留下的关系
+      const clicked = await page.evaluate(() => {
+        const rows = [...document.querySelectorAll('.p-rel-row')];
+        const target = rows.find((r) => r.textContent?.includes('我的徒弟是 乙徒弟'));
+        const btn = target?.querySelector('.p-rel-op.danger');
+        if (!btn) return false;
+        btn.click();
+        return true;
+      });
+      assert(clicked, '没找到「我的徒弟是 乙徒弟」这一行的删除按钮');
+      await page.waitForTimeout(700);
+      await page.locator('.modal button', { hasText: '删除' }).click();
+      await page.waitForTimeout(1600);
+
+      const rels = await (
+        await fetch(`${BASE}/api/projects/${projectId}/entities/${r2A.id}/relations`)
+      ).json();
+      assert(rels.out.length === 0, `删除后仍有 ${rels.out.length} 条关系`);
     });
 
     await check('无未捕获的运行时错误', async () => {
