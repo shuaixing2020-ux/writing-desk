@@ -144,7 +144,6 @@ CREATE TABLE IF NOT EXISTS relation (
   line_no   INTEGER
 );
 CREATE INDEX IF NOT EXISTS relation_from  ON relation(from_id);
-CREATE INDEX IF NOT EXISTS relation_owner ON relation(owner_id);
 CREATE INDEX IF NOT EXISTS relation_to   ON relation(to_id);
 CREATE INDEX IF NOT EXISTS relation_type ON relation(type);
 
@@ -162,6 +161,26 @@ export class IndexDb {
   constructor(filePath: string) {
     this.db = new DatabaseSync(filePath);
     this.db.exec(SCHEMA);
+    this.migrate();
+  }
+
+  /**
+   * 轻量迁移：老索引库补新列。
+   *
+   * 为什么不靠「删库重建」解决：schema 版本号变化会触发重建，
+   * 但重建只清数据行（CREATE TABLE IF NOT EXISTS 不会改已存在的表），
+   * 列还是缺的 —— 于是查询直接报 `no such column: owner_id`。
+   * 所以这里显式补列，幂等（已存在就跳过）。
+   */
+  private migrate(): void {
+    const cols = this.db.prepare('PRAGMA table_info(relation)').all() as Array<{ name: string }>;
+    const hasOwner = cols.some((c) => c.name === 'owner_id');
+    if (!hasOwner) {
+      this.db.exec('ALTER TABLE relation ADD COLUMN owner_id TEXT');
+      // 老数据没有 owner 信息：按「写在起点文件里」补齐，与旧模型一致
+      this.db.exec('UPDATE relation SET owner_id = from_id WHERE owner_id IS NULL');
+    }
+    this.db.exec('CREATE INDEX IF NOT EXISTS relation_owner ON relation(owner_id)');
   }
 
   static async open(filePath: string): Promise<IndexDb> {

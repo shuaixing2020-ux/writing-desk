@@ -38,11 +38,20 @@ body.has-overlay {
 
 /* ─────────────────────── 启动界面 ─────────────────────── */
 
+/*
+ * #app 必须始终撑满视口。
+ * shell 创建后会把 `app` 类从 #app 上摘掉（那是给启动屏用的居中布局），
+ * 如果高度只写在 `#app.app` 里，摘掉类之后高度就塌成内容高度 ——
+ * 表现就是「界面只占上半屏，下面一大片空白」。
+ */
+#app {
+  height: 100%;
+}
+
 #app.app {
   display: flex;
   align-items: center;
   justify-content: center;
-  height: 100%;
 }
 
 .boot-screen {
