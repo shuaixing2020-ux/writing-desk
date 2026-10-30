@@ -296,6 +296,20 @@ export const api = {
   retargetRelation: (relationId: string, to: string) =>
     post<Relation>(`${projectPrefix()}/relations/${encodeURIComponent(relationId)}/retarget`, { to }),
 
+  /** 整图读取（面板图谱用）：可只取聚焦邻域或某场景出场 */
+  getGraph: (opts: { focus?: string; depth?: number; doc?: string } = {}) => {
+    const q = new URLSearchParams();
+    if (opts.focus) q.set('focus', opts.focus);
+    if (opts.doc) q.set('doc', opts.doc);
+    if (opts.depth !== undefined) q.set('depth', String(opts.depth));
+    const suffix = q.toString() ? `?${q.toString()}` : '';
+    return get<{
+      nodes: Array<{ id: string; type: string; name: string }>;
+      edges: Array<{ id: string; type: string; from: string; to: string; note: string; symmetric: boolean }>;
+      total_entities: number;
+    }>(`${projectPrefix()}/graph${suffix}`);
+  },
+
   listRelationTypes: () =>
     get<{ types: RelationTypeDef[]; warnings: string[] }>(`${projectPrefix()}/relation-types`),
 

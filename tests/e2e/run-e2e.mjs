@@ -1255,6 +1255,86 @@ async function main() {
       assert(rels.out.length === 0, `删除后仍有 ${rels.out.length} 条关系`);
     });
 
+    // ─────────── 【10】关系图谱面板（R3） ───────────
+
+    console.log('\n【10】关系图谱面板');
+
+    const gA = await apiPost(`/api/projects/${projectId}/entities`, { type: 'character', name: '图甲' });
+    const gB = await apiPost(`/api/projects/${projectId}/entities`, { type: 'character', name: '图乙' });
+    await apiPost(`/api/projects/${projectId}/entities/${gA.id}/relations`, {
+      type: 'mentor',
+      other: gB.id,
+      direction: 'out',
+    });
+
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForTimeout(2400);
+
+    await check('后端整图接口返回节点与带方向的边', async () => {
+      const g = await (await fetch(`${BASE}/api/projects/${projectId}/graph`)).json();
+      assert(Array.isArray(g.nodes) && g.nodes.length > 0, '整图接口没有返回节点');
+      assert(Array.isArray(g.edges), '整图接口没有返回边');
+      const edge = g.edges.find((e) => e.type === 'mentor');
+      assert(edge, '缺少师徒关系边');
+      assert(edge.from === gA.id && edge.to === gB.id, '边的方向不对');
+      assert(edge.symmetric === false, '有向边应标 symmetric=false');
+    });
+
+    await check('面板渲染关系图：画布有内容、显示统计', async () => {
+      await page.locator('.inspector-tabs button[data-panel="graph"]').click();
+      await page.waitForTimeout(2600);
+
+      const info = await page.evaluate(() => {
+        const c = document.querySelector('.p-graph-canvas');
+        return {
+          hasCanvas: !!c,
+          status: document.querySelector('.p-graph-status')?.textContent ?? '',
+          tools: [...document.querySelectorAll('.p-graph-tools .btn')].map((b) => b.textContent),
+        };
+      });
+      assert(info.hasCanvas, '面板里没有画布');
+      assert(/条目/.test(info.status), `状态行没显示统计：${info.status}`);
+      assert(info.tools.includes('聚焦本章') && info.tools.includes('全部'), '缺少工具栏按钮');
+
+      // 画布真的画了东西（不是一片空白）
+      const painted = await page.evaluate(() => {
+        const c = document.querySelector('.p-graph-canvas');
+        const ctx = c.getContext('2d');
+        const d = ctx.getImageData(0, 0, c.width, c.height).data;
+        let n = 0;
+        for (let i = 3; i < d.length; i += 4) if (d[i] > 8) n++;
+        return n / (d.length / 4);
+      });
+      assert(painted > 0.001, `画布几乎没着色（${painted.toFixed(4)}），可能没绘制`);
+    });
+
+    await check('点击节点在设定库打开该条目', async () => {
+      const box = await page.evaluate(() => {
+        const r = document.querySelector('.p-graph-canvas').getBoundingClientRect();
+        return { left: r.left, top: r.top, w: r.width, h: r.height };
+      });
+
+      let opened = false;
+      outer: for (let dx = -Math.floor(box.w / 2); dx <= box.w / 2; dx += 14) {
+        for (let dy = -Math.floor(box.h / 2); dy <= box.h / 2; dy += 14) {
+          await page.mouse.click(box.left + box.w / 2 + dx, box.top + box.h / 2 + dy);
+          await page.waitForTimeout(50);
+          const panel = await page.evaluate(
+            () => document.querySelector('.inspector-tabs button.active')?.getAttribute('data-panel'),
+          );
+          if (panel === 'bible') {
+            opened = true;
+            break outer;
+          }
+        }
+      }
+      assert(opened, '点画布上的节点没有打开设定库条目');
+
+      // 收尾：回到关系图面板
+      await page.locator('.inspector-tabs button[data-panel="graph"]').click();
+      await page.waitForTimeout(800);
+    });
+
     await check('无未捕获的运行时错误', async () => {
       // 过滤掉网络类噪音（服务端某些路由可能还在开发）
       const real = consoleErrors.filter(

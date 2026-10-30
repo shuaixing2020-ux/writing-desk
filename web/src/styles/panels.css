@@ -2391,3 +2391,48 @@
   line-height: 1.5;
   padding-left: 2px;
 }
+
+/* ── 关系图谱面板（R3） ── */
+.p-graph-tools {
+  display: flex;
+  gap: 4px;
+  padding: var(--sp-2) var(--sp-3) 4px;
+  flex: none;
+}
+.p-graph-search {
+  margin: 0 var(--sp-3) var(--sp-1);
+  font-size: var(--fs-xs);
+  padding: 3px 6px;
+  border-radius: var(--r-sm);
+  background: var(--paper-2);
+  border: 1px solid transparent;
+  color: var(--ink-1);
+  flex: none;
+}
+.p-graph-search:focus {
+  outline: none;
+  border-color: var(--accent);
+  background: var(--paper-0);
+}
+.p-graph-status {
+  font-size: var(--fs-xs);
+  color: var(--ink-4);
+  padding: 0 var(--sp-3) 4px;
+  flex: none;
+}
+.p-graph-hint {
+  font-size: var(--fs-xs);
+  color: var(--ink-4);
+  line-height: 1.5;
+  padding: 0 var(--sp-3) 4px;
+  flex: none;
+}
+.p-graph-hint.hidden {
+  display: none;
+}
+.p-graph-canvas {
+  flex: 1;
+  min-height: 220px;
+  width: 100%;
+  display: block;
+}

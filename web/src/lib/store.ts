@@ -33,6 +33,7 @@ export type RightPanelKind =
   | 'lint'
   | 'snapshots'
   | 'stats'
+  | 'graph'
   | 'inbox'
   | 'settings'
   | 'none';

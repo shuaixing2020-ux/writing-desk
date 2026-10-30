@@ -433,6 +433,14 @@ export class IndexDb {
     return rows.map((r) => ({ ...r, aliases: safeJsonArray(r.aliases) }));
   }
 
+  /** 某个场景里出场过的条目 id（"聚焦本章出场人物"用） */
+  entityIdsMentionedIn(docId: string): string[] {
+    const rows = this.db
+      .prepare('SELECT DISTINCT entity_id FROM mention WHERE doc_id = ? AND count > 0')
+      .all(docId) as Array<{ entity_id: string }>;
+    return rows.map((r) => r.entity_id);
+  }
+
   mentionsForEntity(entityId: string): Array<{ doc_id: string; count: number; first_pos: number; last_pos: number }> {
     return this.db
       .prepare('SELECT doc_id, count, first_pos, last_pos FROM mention WHERE entity_id = ?')

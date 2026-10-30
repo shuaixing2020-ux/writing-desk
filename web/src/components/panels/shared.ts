@@ -25,6 +25,7 @@ function svg(paths: string, opts: { size?: number; viewBox?: string } = {}): str
 }
 
 export const ICONS = {
+  graph: svg('<circle cx="3.6" cy="11.8" r="1.8"/><circle cx="8" cy="3.8" r="1.8"/><circle cx="12.4" cy="11.8" r="1.8"/><path d="M5 10.2 7 5.6M9 5.6l2 4.6M5.4 11.8h5.2"/>'),
   outline: svg('<path d="M3 3.5h10M3 8h10M3 12.5h6"/><circle cx="13" cy="12.5" r="1.1"/>'),
   bible: svg(
     '<path d="M3.2 2.8h6.4a2 2 0 0 1 2 2v8.4H5.2a2 2 0 0 1-2-2z"/><path d="M5.4 5.6h4.2M5.4 8.2h4.2"/>',

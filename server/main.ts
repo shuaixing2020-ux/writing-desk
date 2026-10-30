@@ -35,6 +35,7 @@ import { registerBackupRoutes } from './routes/backup.ts';
 import { registerJobRoutes } from './routes/jobs.ts';
 import { registerAiRoutes } from './routes/ai.ts';
 import { registerGraphRoutes } from './routes/graph.ts';
+import { registerGraphViewRoutes } from './routes/graph-view.ts';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const WEB_DIST = path.join(REPO_ROOT, 'web', 'dist');
@@ -211,6 +212,7 @@ export async function buildServer(dataDir: string): Promise<{
   registerJobRoutes(app, appCtx);
   registerAiRoutes(app, appCtx);
   registerGraphRoutes(app, appCtx);
+  registerGraphViewRoutes(app, appCtx);
 
   app.get('/api/health', async () => ({
     ok: true,

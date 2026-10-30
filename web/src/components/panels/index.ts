@@ -10,6 +10,7 @@
 import type { PanelDef } from '../../lib/contracts.ts';
 import { panel as outlinePanel } from './outline.ts';
 import { panel as biblePanel } from './bible.ts';
+import { panel as graphPanel } from './graph.ts';
 import { panel as searchPanel } from './search.ts';
 import { panel as lintPanel } from './lint.ts';
 import { panel as snapshotsPanel } from './snapshots.ts';
@@ -20,6 +21,7 @@ import { panel as settingsPanel } from './settings.ts';
 export const panels: PanelDef[] = [
   outlinePanel,
   biblePanel,
+  graphPanel,
   searchPanel,
   lintPanel,
   snapshotsPanel,
