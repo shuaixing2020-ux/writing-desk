@@ -84,6 +84,8 @@ export interface ShellHandlers {
   onOpenGraph(): void;
   /** 检查器宽度变化（拖拽结束或按方向键/预设后） */
   onInspectorWidth(width: number): void;
+  /** 重启本地服务（网页里的「刷新服务」按钮） */
+  onRestartService(): void;
   onToggleFocus(): void;
   onProjectMenu(anchor: HTMLElement): void;
   onOpenCommandPalette(): void;
@@ -243,6 +245,18 @@ export function createShell(root: HTMLElement, opts: ShellOptions): ShellHandle 
     onclick: () => handlers.onOpenGraph(),
   });
 
+  /**
+   * 重启服务：改了服务端代码、或界面莫名不对时，不用回终端。
+   * 点了之后会断开连接、几秒后自动刷新页面。
+   */
+  const restartBtn = h('button', {
+    class: 'icon-btn',
+    title: '重启服务',
+    'aria-label': '重启服务',
+    html: ICONS.refresh,
+    onclick: () => handlers.onRestartService(),
+  });
+
   const inspectorBtn = h('button', {
     class: 'icon-btn',
     title: '面板（⌘J）',
@@ -256,7 +270,7 @@ export function createShell(root: HTMLElement, opts: ShellOptions): ShellHandle 
     { class: 'topbar' },
     h('div', { class: 'topbar-left' }, sidebarBtn, projectChip),
     h('div', { class: 'topbar-center' }, searchBtn),
-    h('div', { class: 'topbar-right' }, goalMini, saveInd, graphBtn, focusBtn, inspectorBtn),
+    h('div', { class: 'topbar-right' }, goalMini, saveInd, restartBtn, graphBtn, focusBtn, inspectorBtn),
   );
 
   // ── 侧栏 ──

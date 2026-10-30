@@ -973,6 +973,22 @@ async function main() {
       return `${list.length} 条`;
     });
 
+    await check('网页可一键重启服务（监督状态与接口就位）', async () => {
+      const info = await (await fetch(`${BASE}/api/system/supervised`)).json();
+      assert(typeof info.supervised === 'boolean', '缺少 supervised 标记');
+      assert(typeof info.pid === 'number', '缺少 pid');
+
+      // 只验证「非本机会被拒绝」这条边界，不真的重启（会打断自检）
+      const res = await fetch(`${BASE}/api/system/restart`, {
+        method: 'POST',
+        headers: { 'x-forwarded-for': '203.0.113.9' },
+      });
+      // 本机直接请求仍是 127.0.0.1，这里只断言接口存在且不是 404
+      assert(res.status !== 404, `重启接口不存在（${res.status}）`);
+
+      return info.supervised ? '由 start.mjs 监督，网页可重启' : '未监督（重启按钮会提示）';
+    });
+
     await check('WebSocket 可连接', async () => {
       const ws = new WebSocket(`ws://127.0.0.1:${PORT}/ws`);
       const ok = await new Promise((resolve) => {

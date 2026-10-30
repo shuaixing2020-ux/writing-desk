@@ -112,20 +112,45 @@ async function main() {
   log('按 Ctrl+C 停止');
   console.log('');
 
-  const child = spawn(
-    process.execPath,
-    ['--disable-warning=ExperimentalWarning', 'server/main.ts'],
-    { cwd: root, stdio: 'inherit', env: { ...process.env, WD_PORT: PORT } },
-  );
+  /**
+   * 监督循环：网页里点「重启服务」时，子进程会以退出码 75 结束，
+   * 这里收到 75 就重新拉起，页面那边轮询 /api/health 等它回来再刷新。
+   * 其它退出码（包括 Ctrl+C 触发的 SIGTERM）照旧退出，不做意外重启。
+   */
+  let stopping = false;
+  const RESTART_CODE = 75;
 
   const shutdown = () => {
-    child.kill('SIGTERM');
+    stopping = true;
+    child?.kill('SIGTERM');
     setTimeout(() => process.exit(0), 800);
   };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 
-  child.on('exit', (code) => process.exit(code ?? 0));
+  let child = null;
+  for (;;) {
+    child = spawn(
+      process.execPath,
+      ['--disable-warning=ExperimentalWarning', 'server/main.ts'],
+      {
+        cwd: root,
+        stdio: 'inherit',
+        env: { ...process.env, WD_PORT: PORT, WD_SUPERVISED: '1' },
+      },
+    );
+
+    const code = await new Promise((resolve) => {
+      child.on('exit', (c, signal) => resolve(signal ? 1 : (c ?? 0)));
+      child.on('error', () => resolve(1));
+    });
+
+    if (code === RESTART_CODE && !stopping) {
+      log('收到重启请求，正在重新拉起服务…');
+      continue;
+    }
+    process.exit(code ?? 0);
+  }
 }
 
 main().catch((err) => {

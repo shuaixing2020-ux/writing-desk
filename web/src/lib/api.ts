@@ -296,6 +296,9 @@ export const api = {
   retargetRelation: (relationId: string, to: string) =>
     post<Relation>(`${projectPrefix()}/relations/${encodeURIComponent(relationId)}/retarget`, { to }),
 
+  /** 让服务重启（仅本机、且由 scripts/start.mjs 监督时可用） */
+  restartService: () => post<{ ok: boolean; restarting?: boolean }>('/api/system/restart'),
+
   /** 整图读取（面板图谱用）：可只取聚焦邻域或某场景出场 */
   getGraph: (opts: { focus?: string; depth?: number; doc?: string } = {}) => {
     const q = new URLSearchParams();

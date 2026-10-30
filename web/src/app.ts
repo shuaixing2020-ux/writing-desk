@@ -225,6 +225,7 @@ async function main(): Promise<void> {
           new CustomEvent('writingdesk:inspector-width', { detail: { width } }),
         );
       },
+      onRestartService: () => void restartService(),
       onOpenGraph: () => openGraphView(),
       onToggleFocus: () => actions.toggleFocus(),
       onProjectMenu: () => openProjectSwitcher(),
@@ -914,6 +915,57 @@ async function main(): Promise<void> {
     }
   }
 
+  /**
+   * 重启本地服务（网页按钮 / 命令面板）。
+   *
+   * 顺序很重要：先存稿，再请求重启，然后轮询 /api/health 等它回来，
+   * 回来后再刷新页面。服务不在监督进程下时，接口会返回 501 并说明原因。
+   */
+  async function restartService(): Promise<void> {
+    const ok = await overlays.confirm({
+      title: '重启本地服务？',
+      message:
+        '会先保存当前正文，然后断开连接并重新启动。页面会在几秒后自动刷新。' +
+        '\n\n如果服务不是用 npm run serve 启动的，重启后不会被自动拉起。',
+      confirmText: '重启',
+      danger: true,
+    });
+    if (!ok) return;
+
+    // 先把没保存的字落盘：重启会断连接，不能让作者的内容停在内存里
+    try {
+      await saveNow();
+    } catch {
+      toast('保存失败，已取消重启', 'error');
+      return;
+    }
+
+    toast('正在重启服务…', 'info', 5000);
+    try {
+      await api.restartService();
+    } catch {
+      // 进程可能已经退出，连接被重置是预期行为，继续轮询
+    }
+
+    const started = Date.now();
+    const timer = window.setInterval(() => {
+      if (Date.now() - started > 25000) {
+        window.clearInterval(timer);
+        toast('重启超时，请检查终端里的服务是否还在运行', 'error', 8000);
+        return;
+      }
+      void fetch('/api/health', { cache: 'no-store' })
+        .then((res) => {
+          if (!res.ok) return;
+          window.clearInterval(timer);
+          window.location.reload();
+        })
+        .catch(() => {
+          /* 还没起来，继续等 */
+        });
+    }, 600);
+  }
+
   function openOverlay(kind: string, payload?: unknown): void {
     switch (kind) {
       case 'confirm': {
@@ -1331,6 +1383,14 @@ async function main(): Promise<void> {
     }
 
     items.push(
+      {
+        id: 'restart-service',
+        title: '重启本地服务',
+        group: '视图',
+        keywords: '重启 刷新 服务 restart',
+        icon: ICONS.refresh,
+        run: () => void restartService(),
+      },
       {
         id: 'graph',
         title: '打开关系图谱',
