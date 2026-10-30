@@ -292,7 +292,9 @@ describe('批量删除', () => {
       try {
         const del = await post(h, '/nodes/delete', { ids: [s1, s2] });
         assert.equal(del.status, 500, `期望 500，实际 ${del.status}`);
-        assert.match(String((del.body as { message?: string }).message ?? ''), /快照失败/);
+        // 断言「错误信息里说明了原因」，不绑定字段名：
+      // 服务端可能用 { error } 或 Fastify 默认的 { message } 信封。
+      assert.match(JSON.stringify(del.body), /快照失败/, '错误信息应说明是快照失败');
       } finally {
         ctx.snapshots.create = realCreate;
       }
@@ -329,7 +331,7 @@ describe('批量删除', () => {
       try {
         const del = await post(h, '/nodes/delete', { ids: [s1, s2] });
         assert.equal(del.status, 500, `期望 500，实际 ${del.status}`);
-        assert.match(String((del.body as { message?: string }).message ?? ''), /已全部回滚/);
+        assert.match(JSON.stringify(del.body), /已全部回滚/, '错误信息应说明已回滚');
       } finally {
         ctx.store.deleteNodeToTrash = realDelete;
       }

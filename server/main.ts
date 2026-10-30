@@ -70,6 +70,53 @@ export async function buildServer(dataDir: string): Promise<{
     bodyLimit: 8 * 1024 * 1024,
   });
 
+  // 注意：必须在任何 `await app.register(...)` 之前设置。
+  // Fastify 实例是 thenable，`await app.register(...)` 会触发 ready()；
+  // 一旦启动，之后设置的 errorHandler 不会应用到已注册的路由 ——
+  // 这个 handler 曾因此变成死代码，5xx 的内部错误信息直接漏给前端。
+  // setNotFoundHandler 不受影响（它在请求时查），但为清晰起见也放前面。
+  // ─────────────────────── 全局错误处理 ───────────────────────
+
+  app.setErrorHandler(async (error: Error, request, reply) => {
+    // Fastify 内置错误（JSON 解析失败 / body 过大 / 404）自带 statusCode 与 code，
+    // 自己的 HttpError 也带；统一从运行时读，不做 instanceof 之外的类型假设。
+    const raw = error as unknown as { statusCode?: unknown; code?: unknown };
+
+    // 统一从运行时属性读：HttpError、EntityNameConflictError、Fastify 内置错误
+    // 都自带 statusCode 与 code，不需要 instanceof 白名单。
+    const status =
+      typeof raw.statusCode === 'number'
+        ? raw.statusCode
+        : error instanceof HttpError
+          ? error.statusCode
+          : 500;
+    const code =
+      typeof raw.code === 'string'
+        ? raw.code
+        : error instanceof HttpError
+          ? error.code
+          : 'error';
+
+    // 4xx 是用户输入问题，只记一行；5xx 是程序问题，必须留栈
+    if (status >= 500) {
+      console.error(`[api] ${request.method} ${request.raw.url} → ${status}`, error);
+    }
+
+    // Fastify 内置错误（JSON 解析失败、body 过大）带自己的中文信息，直接用
+    const message =
+      status >= 500 && !(error instanceof HttpError)
+        ? `服务内部错误：${error.message || '未知错误'}`
+        : error.message || '请求失败';
+
+    // 用 .type().send() 并显式序列化：reply.send(对象) 会经过 Fastify 的
+    // 默认序列化器，它会给响应加上 statusCode/error 字段。我们自己已经把
+    // 错误信息整理好了，不需要它再包一层 —— 前端只读 error 与 code。
+    return reply
+      .code(status)
+      .type('application/json; charset=utf-8')
+      .send(JSON.stringify({ error: message, code }));
+  });
+
   /**
    * 前端 api.ts 的 request() 给所有请求（含 DELETE）都带了
    * `content-type: application/json`，但 DELETE 没有 body。
@@ -232,48 +279,6 @@ export async function buildServer(dataDir: string): Promise<{
     }
 
     return reply.type('text/html; charset=utf-8').sendFile('index.html');
-  });
-
-  // ─────────────────────── 全局错误处理 ───────────────────────
-
-  app.setErrorHandler(async (error: Error, request, reply) => {
-    // Fastify 内置错误（JSON 解析失败 / body 过大 / 404）自带 statusCode 与 code，
-    // 自己的 HttpError 也带；统一从运行时读，不做 instanceof 之外的类型假设。
-    const raw = error as unknown as { statusCode?: unknown; code?: unknown };
-
-    // 统一从运行时属性读：HttpError、EntityNameConflictError、Fastify 内置错误
-    // 都自带 statusCode 与 code，不需要 instanceof 白名单。
-    const status =
-      typeof raw.statusCode === 'number'
-        ? raw.statusCode
-        : error instanceof HttpError
-          ? error.statusCode
-          : 500;
-    const code =
-      typeof raw.code === 'string'
-        ? raw.code
-        : error instanceof HttpError
-          ? error.code
-          : 'error';
-
-    // 4xx 是用户输入问题，只记一行；5xx 是程序问题，必须留栈
-    if (status >= 500) {
-      console.error(`[api] ${request.method} ${request.raw.url} → ${status}`, error);
-    }
-
-    // Fastify 内置错误（JSON 解析失败、body 过大）带自己的中文信息，直接用
-    const message =
-      status >= 500 && !(error instanceof HttpError)
-        ? `服务内部错误：${error.message || '未知错误'}`
-        : error.message || '请求失败';
-
-    // 用 .type().send() 并显式序列化：reply.send(对象) 会经过 Fastify 的
-    // 默认序列化器，它会给响应加上 statusCode/error 字段。我们自己已经把
-    // 错误信息整理好了，不需要它再包一层 —— 前端只读 error 与 code。
-    return reply
-      .code(status)
-      .type('application/json; charset=utf-8')
-      .send(JSON.stringify({ error: message, code }));
   });
 
   // 关闭钩子：先断开 WebSocket，再关作品索引，最后让 Fastify 收尾
