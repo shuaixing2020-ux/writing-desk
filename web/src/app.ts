@@ -28,6 +28,12 @@ import { createEditor } from './components/editor.ts';
 import { createOverlays, type CommandItem, type Overlays } from './components/overlays.ts';
 import { panels } from './components/panels/index.ts';
 import { applyEditorSettings, createShell, ICONS, type ShellHandle } from './components/shell.ts';
+import {
+  clampInspectorWidth,
+  loadPrefs,
+  savePrefs,
+  type UiPrefs,
+} from './lib/ui-prefs.ts';
 import { buildMobileNav, isMobileViewport, MobileShell } from './components/mobile.ts';
 import { createTree, type TreeHandle } from './components/tree.ts';
 import { GraphView } from './components/graph/graph-view.ts';
@@ -92,6 +98,14 @@ function loadPanel(): RightPanelKind {
   return 'outline';
 }
 
+/** 界面偏好：模块级单例，读写都经由 savePrefs 落本地存储 */
+let uiPrefs: UiPrefs = loadPrefs();
+
+function persistUiPrefs(patch: Partial<UiPrefs>): void {
+  uiPrefs = { ...uiPrefs, ...patch };
+  savePrefs(uiPrefs);
+}
+
 function initialState(): AppState {
   const settings = loadSettings();
   return {
@@ -108,7 +122,7 @@ function initialState(): AppState {
     lastSavedAt: null,
     rightPanel: loadPanel(),
     sidebarOpen: true,
-    inspectorOpen: true,
+    inspectorOpen: uiPrefs.inspectorOpen,
     settings,
     entities: [],
     rules: [],
@@ -204,6 +218,7 @@ async function main(): Promise<void> {
     handlers: {
       onToggleSidebar: () => actions.toggleSidebar(),
       onToggleInspector: () => toggleInspector(),
+      onInspectorWidth: (width) => persistUiPrefs({ inspectorWidth: width }),
       onOpenGraph: () => openGraphView(),
       onToggleFocus: () => actions.toggleFocus(),
       onProjectMenu: () => openProjectSwitcher(),
@@ -225,6 +240,21 @@ async function main(): Promise<void> {
       onOpenTrash: () => openTrash(),
     },
   });
+
+  // 恢复上次的检查器宽度（≤960px 时 shell 内部会忽略）
+  shell.setInspectorWidth(uiPrefs.inspectorWidth);
+
+  // 窗口变小导致放不下时自动收窄，不能让检查器把正文挤没
+  let resizeTimer: ReturnType<typeof setTimeout> | null = null;
+  const onWindowResize = (): void => {
+    if (resizeTimer) clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      const next = clampInspectorWidth(uiPrefs.inspectorWidth, window.innerWidth);
+      if (next !== uiPrefs.inspectorWidth) persistUiPrefs({ inspectorWidth: next });
+      shell?.setInspectorWidth(next);
+    }, 120);
+  };
+  window.addEventListener('resize', onWindowResize);
 
   shell.editorMount.textContent = '';
   shell.editorMount.appendChild(editor.el);
@@ -856,8 +886,10 @@ async function main(): Promise<void> {
     const open = store.state.inspectorOpen && store.state.rightPanel !== 'none';
     if (open) {
       store.set({ inspectorOpen: false });
+      persistUiPrefs({ inspectorOpen: false });
     } else {
       store.set({ inspectorOpen: true, rightPanel: store.state.rightPanel === 'none' ? 'outline' : store.state.rightPanel });
+      persistUiPrefs({ inspectorOpen: true });
     }
   }
 
@@ -2445,6 +2477,8 @@ function persistPanel(kind: RightPanelKind): void {
   } catch {
     /* ignore */
   }
+  // 同时记进统一偏好：面板与外层布局是同一件事，放一处更方便排查
+  persistUiPrefs({ lastPanel: kind });
 }
 
 /** 让类型检查知道这些导出被用到（保持模块边界清晰） */

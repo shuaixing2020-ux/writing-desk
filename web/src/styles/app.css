@@ -163,27 +163,43 @@ body.has-overlay {
   overflow: hidden;
 }
 
+/*
+ * 四列：目录 | 正文 | 分隔条 | 检查器。
+ * 第三列（分隔条）在检查器收起时为 0，不占位。
+ * 检查器宽度用 --inspector-w-cur（桌面由 JS 写入），
+ * 没有写入时回退到 --inspector-w，所以 ≤960px 的媒体查询照常生效。
+ */
 .workspace {
   display: grid;
-  grid-template-columns: var(--sidebar-w) minmax(0, 1fr) var(--inspector-w);
+  grid-template-columns:
+    var(--sidebar-w) minmax(0, 1fr) var(--resizer-w, 5px)
+    var(--inspector-w-cur, var(--inspector-w));
   min-height: 0;
   overflow: hidden;
   transition: grid-template-columns var(--dur-3) var(--ease);
 }
 
 .app-shell.sidebar-closed .workspace {
-  grid-template-columns: 0 minmax(0, 1fr) var(--inspector-w);
+  grid-template-columns:
+    0 minmax(0, 1fr) var(--resizer-w, 5px)
+    var(--inspector-w-cur, var(--inspector-w));
 }
 .app-shell.inspector-closed .workspace {
-  grid-template-columns: var(--sidebar-w) minmax(0, 1fr) 0;
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr) 0 0;
 }
 .app-shell.sidebar-closed.inspector-closed .workspace {
-  grid-template-columns: 0 minmax(0, 1fr) 0;
+  grid-template-columns: 0 minmax(0, 1fr) 0 0;
+}
+.app-shell.inspector-closed .inspector-resizer {
+  display: none;
 }
 
 /* 专注模式：只留纸面 */
 .app-shell.focus-mode .workspace {
-  grid-template-columns: 0 minmax(0, 1fr) 0;
+  grid-template-columns: 0 minmax(0, 1fr) 0 0;
+}
+.app-shell.focus-mode .inspector-resizer {
+  display: none;
 }
 .app-shell.focus-mode .topbar {
   opacity: 0;
@@ -1779,4 +1795,68 @@ button.st-item:hover {
 }
 .toast.has-action {
   cursor: default;
+}
+
+
+/* ── 并排工作台：可拖拽分隔条与宽度预设（L1） ── */
+
+.inspector-resizer {
+  position: relative;
+  cursor: col-resize;
+  background: transparent;
+  transition: background var(--dur-1) var(--ease);
+  /* 触摸时不要触发滚动/缩放手势 */
+  touch-action: none;
+  outline: none;
+}
+/* 视觉上只画 1px，命中区靠左右各扩 2px —— 细线好看但难点 */
+.inspector-resizer::after {
+  content: '';
+  position: absolute;
+  inset: 0 2px;
+  background: var(--paper-4);
+  transition: background var(--dur-1) var(--ease);
+}
+.inspector-resizer:hover::after,
+.inspector-resizer:focus-visible::after,
+.inspector-resizer.dragging::after {
+  background: var(--accent);
+}
+.inspector-resizer:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--accent);
+  border-radius: 2px;
+}
+
+.inspector-presets {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+}
+.inspector-preset {
+  font-size: var(--fs-xs);
+  line-height: 1;
+  color: var(--ink-4);
+  padding: 3px 6px;
+  border-radius: var(--r-sm);
+  transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+}
+.inspector-preset:hover {
+  background: var(--paper-3);
+  color: var(--ink-1);
+}
+.inspector-preset.active {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+
+/* 移动端：不显示分隔条与宽度预设。
+   手机上检查器是抽屉，宽度由布局决定，给宽度按钮只会误导。
+   工作区的单列布局由 mobile.css 接管（它后加载，优先级更高）。 */
+@media (max-width: 960px) {
+  .inspector-resizer,
+  .inspector-presets {
+    display: none;
+  }
 }

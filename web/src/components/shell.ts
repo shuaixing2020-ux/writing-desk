@@ -11,6 +11,12 @@ import type { PanelDef } from '../lib/contracts.ts';
 import { formatTime, fmtNum, h } from '../lib/dom.ts';
 import type { AppState, EditorSettings, RightPanelKind } from '../lib/store.ts';
 import { totalWords } from '../lib/store.ts';
+import {
+  PRESET_NARROW,
+  PRESET_WIDE,
+  clampInspectorWidth,
+  stepInspectorWidth,
+} from '../lib/ui-prefs.ts';
 
 // ─────────────────────── 图标 ───────────────────────
 // 统一 16×16、stroke 1.7、currentColor。不用 emoji：跨平台渲染不一致，且压不住纸感。
@@ -76,6 +82,8 @@ export interface ShellHandlers {
   onToggleInspector(): void;
   /** 打开关系图谱（全屏视图） */
   onOpenGraph(): void;
+  /** 检查器宽度变化（拖拽结束或按方向键/预设后） */
+  onInspectorWidth(width: number): void;
   onToggleFocus(): void;
   onProjectMenu(anchor: HTMLElement): void;
   onOpenCommandPalette(): void;
@@ -116,6 +124,10 @@ export interface ShellHandle {
   update(state: AppState): void;
   setConnection(status: 'connecting' | 'open' | 'closed'): void;
   setInspectorHead(icon: string, title: string): void;
+  /** 设置检查器宽度（桌面）；≤960px 时忽略，避免覆盖移动端布局 */
+  setInspectorWidth(width: number): void;
+  /** 当前生效的检查器宽度（px） */
+  inspectorWidth(): number;
   setView(icon: string, title: string): void;
   showView(visible: boolean): void;
   destroy(): void;
@@ -300,6 +312,20 @@ export function createShell(root: HTMLElement, opts: ShellOptions): ShellHandle 
 
   const inspectorHeadIcon = h('span', { class: 'ih-icon' });
   const inspectorHeadTitle = h('span', { class: 'ih-title' }, '');
+
+  // 两档预设：不想拖拽时一键切换
+  const narrowBtn = h(
+    'button',
+    { class: 'inspector-preset', type: 'button', title: '窄栏（380px）', onclick: () => applyWidth(PRESET_NARROW, true) },
+    '窄',
+  );
+  const wideBtn = h(
+    'button',
+    { class: 'inspector-preset', type: 'button', title: '宽栏（560px）', onclick: () => applyWidth(PRESET_WIDE, true) },
+    '宽',
+  );
+  const presetGroup = h('div', { class: 'inspector-presets' }, narrowBtn, wideBtn);
+
   const inspectorBody = h('div', { class: 'inspector-body' });
   const inspector = h(
     'aside',
@@ -308,12 +334,89 @@ export function createShell(root: HTMLElement, opts: ShellOptions): ShellHandle 
       'div',
       { class: 'inspector-inner' },
       tabs,
-      h('div', { class: 'inspector-head' }, inspectorHeadIcon, inspectorHeadTitle),
+      h(
+        'div',
+        { class: 'inspector-head' },
+        inspectorHeadIcon,
+        inspectorHeadTitle,
+        h('span', { class: 'grow' }),
+        presetGroup,
+      ),
       inspectorBody,
     ),
   );
 
-  const workspace = h('div', { class: 'workspace' }, sidebar, editorMount, inspector);
+  /**
+   * 检查器左边缘的分隔条：鼠标拖拽手柄 + 键盘可达控件。
+   */
+  const resizer = h('div', {
+    class: 'inspector-resizer',
+    role: 'separator',
+    'aria-orientation': 'vertical',
+    'aria-label': '调整右侧面板宽度',
+    tabIndex: 0,
+    title: '拖动调整宽度（左右方向键微调）',
+  });
+
+  let currentWidth = PRESET_NARROW;
+  const isNarrowViewport = (): boolean => window.matchMedia('(max-width: 960px)').matches;
+
+  /** 应用宽度：桌面写内联变量；≤960px 直接忽略，移动端布局完全不变 */
+  const applyWidth = (width: number, notify: boolean): void => {
+    if (isNarrowViewport()) return;
+    const next = clampInspectorWidth(width, window.innerWidth);
+    currentWidth = next;
+    el.style.setProperty('--inspector-w-cur', `${next}px`);
+    narrowBtn.classList.toggle('active', next === PRESET_NARROW);
+    wideBtn.classList.toggle('active', next === PRESET_WIDE);
+    if (notify) handlers.onInspectorWidth(next);
+  };
+
+  let dragStartX = 0;
+  let dragStartW = 0;
+  let dragging = false;
+  resizer.addEventListener('pointerdown', (ev: PointerEvent) => {
+    if (ev.button !== 0) return;
+    dragging = true;
+    dragStartX = ev.clientX;
+    dragStartW = currentWidth;
+    resizer.setPointerCapture(ev.pointerId);
+    resizer.classList.add('dragging');
+    ev.preventDefault();
+  });
+  resizer.addEventListener('pointermove', (ev: PointerEvent) => {
+    if (!dragging) return;
+    // 分隔条在正文右侧：往左拖 → 检查器变宽
+    const next = clampInspectorWidth(dragStartW + (dragStartX - ev.clientX), window.innerWidth);
+    currentWidth = next;
+    el.style.setProperty('--inspector-w-cur', `${next}px`);
+    narrowBtn.classList.toggle('active', next === PRESET_NARROW);
+    wideBtn.classList.toggle('active', next === PRESET_WIDE);
+  });
+  const endResize = (ev: PointerEvent): void => {
+    if (!dragging) return;
+    dragging = false;
+    resizer.classList.remove('dragging');
+    try {
+      resizer.releasePointerCapture(ev.pointerId);
+    } catch {
+      /* 已释放 */
+    }
+    if (!isNarrowViewport()) handlers.onInspectorWidth(currentWidth);
+  };
+  resizer.addEventListener('pointerup', endResize);
+  resizer.addEventListener('pointercancel', endResize);
+
+  resizer.addEventListener('keydown', (ev: KeyboardEvent) => {
+    if (ev.key !== 'ArrowLeft' && ev.key !== 'ArrowRight') return;
+    ev.preventDefault();
+    applyWidth(
+      stepInspectorWidth(currentWidth, ev.key === 'ArrowLeft' ? 1 : -1, window.innerWidth),
+      true,
+    );
+  });
+
+  const workspace = h('div', { class: 'workspace' }, sidebar, editorMount, resizer, inspector);
 
   // ── 设置全屏视图（inInspector=false 的面板挂这里） ──
   const viewHeadIcon = h('span', { class: 'view-icon' });
@@ -510,6 +613,8 @@ export function createShell(root: HTMLElement, opts: ShellOptions): ShellHandle 
     viewBody,
     update,
     setConnection,
+    setInspectorWidth: (width: number) => applyWidth(width, false),
+    inspectorWidth: () => currentWidth,
     setInspectorHead,
     setView,
     showView,

@@ -618,6 +618,101 @@ async function main() {
       }
     });
 
+    // ─────────── 【5】并排工作台（L1） ───────────
+
+    console.log('\n【5】并排工作台');
+
+    const inspectorWidth = () =>
+      page.evaluate(() => Math.round(document.querySelector('.inspector')?.getBoundingClientRect().width ?? 0));
+
+    await check('预设切换：窄 380 / 宽 560', async () => {
+      await page.locator('.inspector-preset', { hasText: '宽' }).click();
+      await page.waitForTimeout(700);
+      assertEq(await inspectorWidth(), 560, '宽栏预设应为 560');
+
+      await page.locator('.inspector-preset', { hasText: '窄' }).click();
+      await page.waitForTimeout(700);
+      assertEq(await inspectorWidth(), 380, '窄栏预设应为 380');
+    });
+
+    await check('拖拽分隔条改变宽度，刷新后保留', async () => {
+      const box = await page.locator('.inspector-resizer').boundingBox();
+      assert(box, '找不到分隔条');
+
+      const start = await inspectorWidth();
+      await page.mouse.move(box.x + box.width / 2, box.y + 180);
+      await page.mouse.down();
+      for (let i = 1; i <= 5; i++) {
+        await page.mouse.move(box.x + box.width / 2 - i * 20, box.y + 180);
+        await page.waitForTimeout(30);
+      }
+      await page.mouse.up();
+      await page.waitForTimeout(500);
+
+      const dragged = await inspectorWidth();
+      assert(dragged > start + 60, `拖拽后应变宽：${start} → ${dragged}`);
+
+      await page.reload({ waitUntil: 'networkidle' });
+      await page.waitForTimeout(2400);
+      const afterReload = await inspectorWidth();
+      assert(
+        Math.abs(afterReload - dragged) <= 2,
+        `刷新后宽度应保留：期望约 ${dragged}，实际 ${afterReload}`,
+      );
+    });
+
+    await check('分隔条可用键盘调整（每步 16px）', async () => {
+      await page.locator('.inspector-resizer').focus();
+      // 每一步都重新测量：上一次拖拽留下的宽度可能是小数，
+      // 拿旧值做绝对比较会被四舍五入坑到。
+      const base = await inspectorWidth();
+      await page.keyboard.press('ArrowLeft');
+      await page.waitForTimeout(300);
+      const wider = await inspectorWidth();
+      assert(wider === base + 16, `左方向键应加宽 16px：${base} → ${wider}`);
+
+      await page.keyboard.press('ArrowRight');
+      await page.waitForTimeout(300);
+      const restored = await inspectorWidth();
+      assert(restored === wider - 16, `右方向键应收窄 16px：${wider} → ${restored}`);
+    });
+
+    await check('专注模式隐藏目录与检查器，再按恢复', async () => {
+      await page.keyboard.press('ControlOrMeta+Shift+F');
+      await page.waitForTimeout(600);
+
+      const focused = await page.evaluate(() => ({
+        cls: document.querySelector('.app-shell')?.className ?? '',
+        editorW: Math.round(document.querySelector('.editor-root')?.getBoundingClientRect().width ?? 0),
+        viewport: window.innerWidth,
+      }));
+      assert(/focus-mode/.test(focused.cls), '未进入专注模式');
+      assert(
+        focused.editorW >= focused.viewport - 4,
+        `专注模式正文应占满：${focused.editorW}/${focused.viewport}`,
+      );
+
+      await page.keyboard.press('ControlOrMeta+Shift+F');
+      await page.waitForTimeout(600);
+      const back = await page.evaluate(() => document.querySelector('.app-shell')?.className ?? '');
+      assert(!/focus-mode/.test(back), '未退出专注模式');
+    });
+
+    await check('窗口变窄时自动收窄检查器，正文不被挤没', async () => {
+      await page.setViewportSize({ width: 1100, height: 900 });
+      await page.waitForTimeout(600);
+
+      const s = await page.evaluate(() => ({
+        inspector: Math.round(document.querySelector('.inspector')?.getBoundingClientRect().width ?? 0),
+        editor: Math.round(document.querySelector('.editor-root')?.getBoundingClientRect().width ?? 0),
+      }));
+      assert(s.editor >= 560, `正文被挤到 ${s.editor}px，应至少 560`);
+      assert(s.inspector >= 300, `检查器不应低于 300px，实际 ${s.inspector}`);
+
+      await page.setViewportSize({ width: 1440, height: 900 });
+      await page.waitForTimeout(600);
+    });
+
     await check('无未捕获的运行时错误', async () => {
       // 过滤掉网络类噪音（服务端某些路由可能还在开发）
       const real = consoleErrors.filter(
