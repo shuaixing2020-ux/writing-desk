@@ -56,6 +56,8 @@ export const panel: PanelDef = {
 
   mount(container: HTMLElement, ctx: PanelContext): PanelInstance {
     const shell = panelShell(container, { tools: [] });
+    // 本面板是「画布占满剩余高度」，需要覆盖默认的滚动容器样式
+    shell.body.classList.add('p-graph-body');
 
     const status = h('div', { class: 'p-graph-status' }, '读取关系…');
     const canvas = h('canvas', { class: 'p-graph-canvas' }) as HTMLCanvasElement;
@@ -74,6 +76,16 @@ export const panel: PanelDef = {
         b.addEventListener('click', () => void load({}));
         return b;
       })(),
+      (() => {
+        // 面板窄，复杂关系看不清：一键打开全屏图谱（同一份数据、同一个入口）
+        const b = h('button', {
+          class: 'btn sm',
+          type: 'button',
+          title: '在整页里展开关系图谱',
+        }, '展开');
+        b.addEventListener('click', () => ctx.actions.openGraphView());
+        return b;
+      })(),
     );
 
     const searchInput = h('input', {
@@ -88,6 +100,9 @@ export const panel: PanelDef = {
     let nodes: GNode[] = [];
     let edges: GEdge[] = [];
     let layout: LNode[] = [];
+    /** 画布的 CSS 像素尺寸：布局与绘制都用它，DPR 只影响背面缓冲区 */
+    let cssW = 0;
+    let cssH = 0;
     let alpha = 0;
     let raf = 0;
     let destroyed = false;
@@ -104,7 +119,7 @@ export const panel: PanelDef = {
         raf = 0;
         if (destroyed) return;
         if (alpha > 0) {
-          alpha = stepLayout(layout, edges.map((e) => [e.from, e.to] as [string, string]), canvas.width, canvas.height, alpha);
+          alpha = stepLayout(layout, edges.map((e) => [e.from, e.to] as [string, string]), cssW || 300, cssH || 200, alpha);
           draw();
           raf = requestAnimationFrame(tick);
           return;
@@ -140,6 +155,8 @@ export const panel: PanelDef = {
       const dpr = Math.min(2, window.devicePixelRatio || 1);
       const w = Math.max(80, Math.floor(rect.width));
       const hh = Math.max(80, Math.floor(rect.height));
+      cssW = w;
+      cssH = hh;
       if (canvas.width === w * dpr && canvas.height === hh * dpr) return;
       canvas.width = w * dpr;
       canvas.height = hh * dpr;
@@ -315,7 +332,12 @@ export const panel: PanelDef = {
         }
 
         resize();
-        rebuildLayout(canvas.width, canvas.height);
+        // 注意用 CSS 像素：canvas.width 是 devicePixelRatio 放大后的值，
+        // 拿它布局会把节点排到可视区之外，界面上只剩角落里一个点。
+        const rect = canvas.getBoundingClientRect();
+        cssW = Math.max(80, Math.floor(rect.width));
+        cssH = Math.max(80, Math.floor(rect.height));
+        rebuildLayout(cssW, cssH);
       } catch (err) {
         status.textContent = '';
         toast(ctx, `关系图读取失败：${errText(err)}`, 'error');

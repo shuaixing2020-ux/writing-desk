@@ -55,6 +55,11 @@ export interface EditorContext {
 export interface EditorHandle {
   el: HTMLElement;
   getValue(): string;
+  /**
+   * 在光标处插入文本（AI 建议落盘的唯一入口）。
+   * 由作者显式点击触发，不自动改写正文。
+   */
+  insertText(text: string): void;
   setContext(ctx: EditorContext): void;
   focus(): void;
   revealRange(from: number, to: number): void;
@@ -980,6 +985,49 @@ export function createEditor(container: HTMLElement, handlers: EditorHandlers): 
   return {
     el,
     getValue,
+    /**
+     * 在光标处插入文本。
+     *
+     * 用 execCommand('insertText') 而不是直接改 DOM：它会走浏览器原生的
+     * 编辑管线，撤销栈、input 事件、中文输入法状态都能保持正确。
+     * 兜底才用 Range 插一段文本节点并手工派发 input。
+     */
+    insertText: (text: string) => {
+      if (!text) return;
+      surface.focus({ preventScroll: false });
+
+      const sel = window.getSelection();
+      if (!sel || sel.rangeCount === 0) {
+        // 没有光标：落到正文末尾
+        const range = document.createRange();
+        range.selectNodeContents(surface);
+        range.collapse(false);
+        sel?.removeAllRanges();
+        sel?.addRange(range);
+      }
+
+      let ok = false;
+      try {
+        ok = document.execCommand('insertText', false, text);
+      } catch {
+        ok = false;
+      }
+
+      if (!ok) {
+        const active = window.getSelection();
+        const range = active && active.rangeCount > 0 ? active.getRangeAt(0) : null;
+        if (range) {
+          range.deleteContents();
+          const node = document.createTextNode(text);
+          range.insertNode(node);
+          range.setStartAfter(node);
+          range.collapse(true);
+          active?.removeAllRanges();
+          active?.addRange(range);
+          surface.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+        }
+      }
+    },
     setContext,
     focus: () => {
       surface.focus({ preventScroll: false });

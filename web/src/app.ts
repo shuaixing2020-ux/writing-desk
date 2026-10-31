@@ -14,6 +14,9 @@
  */
 
 import type {
+  AiConfig,
+  AiStatus,
+  AiFeatureToggles,
   DocNode,
   DocStatus,
   ExportFormat,
@@ -23,7 +26,7 @@ import type {
   SceneContent,
   WsEvent,
 } from '../../shared/types.ts';
-import { COUNT_MODE_LABELS, NODE_KIND_LABELS, WORK_MODE_LABELS } from '../../shared/types.ts';
+import { AI_FEATURE_LABELS, COUNT_MODE_LABELS, NODE_KIND_LABELS, WORK_MODE_LABELS } from '../../shared/types.ts';
 import { createEditor } from './components/editor.ts';
 import { createOverlays, type CommandItem, type Overlays } from './components/overlays.ts';
 import { panels } from './components/panels/index.ts';
@@ -226,6 +229,7 @@ async function main(): Promise<void> {
         );
       },
       onRestartService: () => void restartService(),
+      onAiAssist: () => void openAiAssist(),
       onOpenGraph: () => openGraphView(),
       onToggleFocus: () => actions.toggleFocus(),
       onProjectMenu: () => openProjectSwitcher(),
@@ -966,6 +970,165 @@ async function main(): Promise<void> {
     }, 600);
   }
 
+  /**
+   * AI 辅助写作。
+   *
+   * 流程刻意做成两步：先「预览」把将要发送的内容原样给作者看，
+   * 作者确认后再「生成」，生成结果只是候选文本，
+   * 必须作者点「插入」才进正文 —— 任何情况下都不自动改写。
+   */
+  async function openAiAssist(): Promise<void> {
+    let config: AiConfig;
+    let status: AiStatus;
+    try {
+      const res = await api.getAi();
+      config = res.config;
+      status = res.status;
+    } catch (err) {
+      toast(`读取 AI 配置失败：${err instanceof Error ? err.message : String(err)}`, 'error');
+      return;
+    }
+
+    const enabled = (Object.keys(config.features) as Array<keyof AiFeatureToggles>).filter(
+      (k) => config.features[k],
+    );
+
+    overlays.open(
+      'ai-assist',
+      (body, close) => {
+        body.classList.add('ai-panel');
+
+        if (!status.available || !config.enabled || !config.api_key || enabled.length === 0) {
+          body.append(
+            h('div', { class: 'ai-blocked' },
+              h('div', { class: 'ai-blocked-title' }, 'AI 还没准备好'),
+              ...status.missing.map((m: string) => h('div', { class: 'ai-blocked-item' }, `· ${m}`)),
+              h('div', { class: 'ai-blocked-hint' }, '到「设置 → AI 接入」里开启并填好 API Key 即可。'),
+            ),
+          );
+          return;
+        }
+
+        let feature: keyof AiFeatureToggles = enabled[0];
+        const featureSel = h('select', { class: 'select' }) as HTMLSelectElement;
+        for (const f of enabled) {
+          const o = document.createElement('option');
+          o.value = f;
+          o.textContent = AI_FEATURE_LABELS[f];
+          featureSel.appendChild(o);
+        }
+
+        const instruction = h('textarea', {
+          class: 'ai-input',
+          rows: 3,
+          placeholder: '可选。例如：写一段主角在雨夜赶路的场景，200 字左右',
+          spellcheck: 'false',
+        }) as HTMLTextAreaElement;
+
+        const previewBox = h('pre', { class: 'ai-preview' }, '（还没预览）');
+        const previewMeta = h('div', { class: 'ai-meta' }, '');
+        const resultBox = h('textarea', {
+          class: 'ai-result',
+          rows: 8,
+          placeholder: '生成结果会出现在这里；确认后再点「插入到光标处」',
+          spellcheck: 'false',
+        }) as HTMLTextAreaElement;
+
+        const previewBtn = h('button', { class: 'btn sm', type: 'button' }, '预览将发送的内容');
+        const genBtn = h('button', { class: 'btn sm primary', type: 'button' }, '生成') as HTMLButtonElement;
+        const insertBtn = h('button', { class: 'btn sm', type: 'button' }, '插入到光标处') as HTMLButtonElement;
+        genBtn.disabled = true;
+
+        const contextText = (): string => {
+          // 只带当前场景光标前的部分作为上下文，且截断 —— 出站范围最小化
+          const body = editor.getValue();
+          return body.slice(Math.max(0, body.length - 1500));
+        };
+
+        previewBtn.addEventListener('click', () => {
+          void (async () => {
+            previewBtn.setAttribute('disabled', 'true');
+            try {
+              const res = await api.aiPreview({
+                feature,
+                prompt: instruction.value,
+                context: contextText(),
+              });
+              previewMeta.textContent = res.preview.description;
+              previewBox.textContent = res.preview.messages
+                .map((m) => `【${m.role === 'system' ? '系统' : '发送'}】\n${m.content}`)
+                .join('\n\n');
+              genBtn.disabled = false;
+              resultBox.value = '';
+            } catch (err) {
+              previewBox.textContent = `预览失败：${err instanceof Error ? err.message : String(err)}`;
+              genBtn.disabled = true;
+            } finally {
+              previewBtn.removeAttribute('disabled');
+            }
+          })();
+        });
+
+        genBtn.addEventListener('click', () => {
+          void (async () => {
+            genBtn.disabled = true;
+            genBtn.textContent = '生成中…';
+            try {
+              const res = await api.aiGenerate({
+                feature,
+                prompt: instruction.value,
+                context: contextText(),
+              });
+              resultBox.value = res.text;
+              toast(`已生成（${res.model}，${res.took_ms} ms）`, 'ok');
+            } catch (err) {
+              toast(`生成失败：${err instanceof Error ? err.message : String(err)}`, 'error');
+            } finally {
+              genBtn.textContent = '生成';
+              genBtn.disabled = false;
+            }
+          })();
+        });
+
+        insertBtn.addEventListener('click', () => {
+          const text = resultBox.value.trim();
+          if (!text) {
+            toast('没有可插入的内容', 'warn');
+            return;
+          }
+          editor.insertText(text);
+          close();
+          // 插入只是写进编辑器；落盘仍走正常保存（作者可以撤销）
+          toast('已插入到光标处，可继续修改或撤销', 'ok');
+          markDirty();
+        });
+
+        featureSel.addEventListener('change', () => {
+          feature = featureSel.value as keyof AiFeatureToggles;
+          genBtn.disabled = true;
+          previewBox.textContent = '（切换能力后请重新预览）';
+          previewMeta.textContent = '';
+        });
+
+        body.append(
+          h('div', { class: 'ai-row' }, h('span', { class: 'ai-label' }, '能力'), featureSel),
+          h('div', { class: 'ai-row ai-row-col' }, h('span', { class: 'ai-label' }, '要求'), instruction),
+          h('div', { class: 'ai-actions' }, previewBtn, genBtn),
+          previewMeta,
+          previewBox,
+          h('div', { class: 'ai-row ai-row-col' }, h('span', { class: 'ai-label' }, '结果'), resultBox),
+          h('div', { class: 'ai-actions' }, insertBtn),
+          h(
+            'div',
+            { class: 'ai-note' },
+            '只会把上面预览里那段内容发送到你配置的模型接口；结果不会自动写入正文，必须你点「插入」。',
+          ),
+        );
+      },
+      { title: 'AI 辅助写作', width: 620 },
+    );
+  }
+
   function openOverlay(kind: string, payload?: unknown): void {
     switch (kind) {
       case 'confirm': {
@@ -1383,6 +1546,14 @@ async function main(): Promise<void> {
     }
 
     items.push(
+      {
+        id: 'ai-assist',
+        title: 'AI 辅助写作',
+        group: '写作',
+        keywords: 'ai 续写 润色 取名',
+        icon: ICONS.ai,
+        run: () => void openAiAssist(),
+      },
       {
         id: 'restart-service',
         title: '重启本地服务',
@@ -2144,6 +2315,7 @@ async function main(): Promise<void> {
       return dirtyBody !== null || editor.getValue() !== savedBody;
     },
 
+    openGraphView: () => openGraphView(),
     setRightPanel(kind): void {
       const def = panels.find((p) => p.id === kind);
       if (def && !def.inInspector) {

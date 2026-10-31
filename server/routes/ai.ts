@@ -3,12 +3,12 @@
  *
  * GET    /api/projects/:pid/ai          → { config: AiConfig（Key 已打码）, status: AiStatus }
  * PATCH  /api/projects/:pid/ai          → 更新配置（Key 打码值不会被当成真 Key）
- * POST   /api/projects/:pid/ai/generate → 执行一次请求（当前恒返回「未接入」）
+ * GET    /api/projects/:pid/ai/providers → 可选服务商与模型
+ * POST   /api/projects/:pid/ai/generate  → 执行一次请求；dry_run=true 只回预览
  *
- * 为什么把 generate 也实现出来：
- *   前端按钮与错误提示可以先接好，将来装上一个适配器就能用。
- *   但服务层的 generate() 在 AI_ADAPTER_INSTALLED = false 时会在任何
- *   网络调用之前抛出，所以这条路由目前**不会产生任何出站请求**。
+ * 出站边界：只有「用户开启 + 填 Key + 点击生成」才会真的发请求；
+ * dry_run 分支只构造请求体、绝不发网络。requests 只发往用户在设置里
+ * 填的 base_url（默认 DeepSeek / Moonshot 官方地址）。
  */
 
 import type { FastifyInstance } from 'fastify';
@@ -17,6 +17,10 @@ import type { AppContextImpl } from '../app-context.ts';
 import { projectOf, badRequest } from './shared.ts';
 import {
   AiUnavailableError,
+  PROVIDER_DEFAULTS,
+  PROVIDER_MODELS,
+  buildRequest,
+  describeRequest,
   generate,
   getAiStatus,
   mergeAiConfig,
@@ -33,6 +37,17 @@ export function registerAiRoutes(app: FastifyInstance, appCtx: AppContextImpl): 
       status: getAiStatus(meta.ai),
     };
   });
+
+  /** 可选服务商与模型（前端下拉用；也允许手填自定义模型） */
+  app.get('/api/projects/:pid/ai/providers', async () => ({
+    providers: (Object.keys(PROVIDER_DEFAULTS) as Array<keyof typeof PROVIDER_DEFAULTS>).map((key) => ({
+      key,
+      label: PROVIDER_DEFAULTS[key].label,
+      base_url: PROVIDER_DEFAULTS[key].base_url,
+      default_model: PROVIDER_DEFAULTS[key].model,
+      models: PROVIDER_MODELS[key],
+    })),
+  }));
 
   app.patch('/api/projects/:pid/ai', async (request) => {
     const { pid } = request.params as { pid: string };
@@ -76,6 +91,7 @@ export function registerAiRoutes(app: FastifyInstance, appCtx: AppContextImpl): 
       prompt?: string;
       context?: string;
       style?: string;
+      dry_run?: boolean;
     };
 
     const feature = body.feature as keyof typeof meta.ai.features;
@@ -83,16 +99,39 @@ export function registerAiRoutes(app: FastifyInstance, appCtx: AppContextImpl): 
       throw badRequest('未指定有效的 AI 能力', 'bad_feature');
     }
 
+    const draft = {
+      feature,
+      prompt: typeof body.prompt === 'string' ? body.prompt.slice(0, 20000) : '',
+      context: typeof body.context === 'string' ? body.context.slice(0, 20000) : '',
+      style: typeof body.style === 'string' ? body.style.slice(0, 200) : undefined,
+    };
+
+    // 预览：只构造请求并返回「将要发送的内容」，不发任何网络请求。
+    // 界面必须先展示它，作者确认后才允许真正生成（见 AGENTS.md 的 AI 段落）。
+    if (body.dry_run === true) {
+      try {
+        const built = buildRequest(draft, meta.ai);
+        return {
+          preview: {
+            endpoint: built.endpoint,
+            model: built.model,
+            provider: meta.ai.provider,
+            description: describeRequest(built, meta.ai),
+            messages: built.body.messages,
+            temperature: built.body.temperature,
+            max_tokens: built.body.max_tokens,
+          },
+        };
+      } catch (err) {
+        if (err instanceof AiUnavailableError) {
+          return reply.code(503).send({ error: err.message, code: err.code });
+        }
+        throw err;
+      }
+    }
+
     try {
-      const result = await generate(
-        {
-          feature,
-          prompt: typeof body.prompt === 'string' ? body.prompt.slice(0, 20000) : '',
-          context: typeof body.context === 'string' ? body.context.slice(0, 20000) : '',
-          style: typeof body.style === 'string' ? body.style.slice(0, 200) : undefined,
-        },
-        meta.ai,
-      );
+      const result = await generate(draft, meta.ai);
       return result;
     } catch (err) {
       if (err instanceof AiUnavailableError) {

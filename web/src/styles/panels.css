@@ -2436,3 +2436,15 @@
   width: 100%;
   display: block;
 }
+
+/* 关系图面板：画布占满剩余高度（默认的滚动容器会让 canvas 只有 150px） */
+.p-graph-body {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding-bottom: var(--sp-2);
+}
+.p-graph-body .p-graph-canvas {
+  flex: 1 1 auto;
+  min-height: 200px;
+}

@@ -407,7 +407,7 @@ export const panel: PanelDef = {
     function renderAiSection(): HTMLElement {
       const sec = document.createElement('div');
       sec.appendChild(
-        sectionTitle('AI 接入', { hint: '接口已预留，默认关闭；当前版本不会发起任何网络请求' }),
+        sectionTitle('AI 接入', { hint: 'OpenAI 兼容协议；只有你点「生成」时才发送，发送前会先给你看内容' }),
       );
 
       const wrap = h('div', { class: 'p-ai' }, loadingBlock('读取 AI 配置…'));
@@ -499,7 +499,7 @@ export const panel: PanelDef = {
           'div',
           { class: 'p-ai-notes' },
           h('div', { class: 'p-ai-note' }, '· API Key 只保存在本机 project.json，界面上永远打码显示'),
-          h('div', { class: 'p-ai-note' }, '· 即便将来接入，AI 产出也只作建议，不会自动改写你的正文'),
+          h('div', { class: 'p-ai-note' }, '· AI 产出只作建议，必须你点「插入」才进正文，不会自动改写'),
           h('div', { class: 'p-ai-note' }, '· 本工具没有遥测、没有崩溃上报，Key 不会被带出去'),
         ),
       );

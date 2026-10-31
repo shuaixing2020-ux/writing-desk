@@ -677,12 +677,12 @@ async function main() {
       throw new Error('备份超时');
     });
 
-    await check('AI 接口默认关闭且拒绝调用（零出站请求）', async () => {
+    await check('AI 已接入但默认关闭，未开启时拒绝调用（不发请求）', async () => {
       const res = await fetch(`${BASE}/api/projects/${projectId}/ai`);
       assert(res.status === 200, `HTTP ${res.status}`);
       const { config, status } = await res.json();
       assert(config.enabled === false, 'AI 默认必须是关闭的');
-      assert(status.available === false, '当前版本不应报告 AI 可用');
+      assert(status.available === true, '适配器已接入，应报告可用');
       assert(Array.isArray(status.missing) && status.missing.length > 0, '应说明缺失项');
 
       // 即便强行调用，也必须被拦在网络请求之前
@@ -694,7 +694,7 @@ async function main() {
       assert(call.status === 503, `应返回 503，实际 ${call.status}`);
       const err = await call.json();
       assert(typeof err.code === 'string' && err.code.startsWith('ai_'), '应返回 AI 错误码');
-      return '默认关闭，调用被拦截';
+      return '默认关闭；未开启时在发请求前拦住';
     });
 
     await check('AI Key 打码且不被回传覆盖', async () => {

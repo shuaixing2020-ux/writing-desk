@@ -40,13 +40,13 @@ describe('AI 默认关闭', () => {
     }
   });
 
-  test('当前版本没有安装适配器', () => {
-    assert.equal(AI_ADAPTER_INSTALLED, false);
+  test('适配器已安装（红线已变更，见 AGENTS.md 第三节）', () => {
+    assert.equal(AI_ADAPTER_INSTALLED, true);
   });
 
-  test('默认配置下 status.available 为 false', () => {
+  test('默认配置下 available 为 true（适配器已接入）但 enabled 为 false', () => {
     const st = getAiStatus(DEFAULT_AI_CONFIG);
-    assert.equal(st.available, false);
+    assert.equal(st.available, true);
     assert.equal(st.enabled, false);
     assert.deepEqual(st.features, []);
     assert.ok(st.missing.length > 0, '应列出缺失项');
@@ -79,14 +79,14 @@ describe('AI 调用拦截（零出站请求）', () => {
     );
   });
 
-  test('全部条件满足但因未安装适配器仍被拦截', async () => {
+  test('没有 Key 时在发出任何请求之前被拦住', async () => {
     await assert.rejects(
       () =>
         generate(
           { feature: 'continue', prompt: 'x' },
-          cfg({ enabled: true, api_key: 'sk-live', features: { continue: true } }),
+          cfg({ enabled: true, api_key: '', features: { continue: true } }),
         ),
-      (err: unknown) => err instanceof AiUnavailableError && err.code === 'ai_not_installed',
+      (err: unknown) => err instanceof AiUnavailableError && err.code === 'ai_no_key',
     );
   });
 });

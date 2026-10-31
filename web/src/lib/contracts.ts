@@ -108,6 +108,9 @@ export interface AppActions {
   // 导航
   jumpToDoc(docId: string): Promise<void>;
   jumpToEntity(entityId: string): void;
+  /** 打开全屏关系图谱（与面板里的关系图同源） */
+  openGraphView(): void;
+
   /** 跳到正文某个字符位置（用于检查结果、搜索命中） */
   revealInEditor(docId: string, from: number, to: number): Promise<void>;
 

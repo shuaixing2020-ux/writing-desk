@@ -63,6 +63,8 @@ export const ICONS: Record<string, string> = {
   typewriter: svg('<path d="M2.6 3.6h10.8M2.6 7.6h7M2.6 11.6h9.4"/>'),
   keyboard: svg('<rect x="1.8" y="4" width="12.4" height="8" rx="1.4"/><path d="M4.4 6.4h.2M7 6.4h.2M9.6 6.4h.2M5.2 9.4h5.6"/>'),
   link: svg('<path d="M6.4 9.6 9.6 6.4"/><path d="M6.8 4.4l1-1a2.6 2.6 0 0 1 3.7 3.7l-1 1"/><path d="M9.2 11.6l-1 1a2.6 2.6 0 0 1-3.7-3.7l1-1"/>'),
+  // AI 辅助写作：一颗星芒
+  ai: svg('<path d="M8 2.2 9.5 6.2 13.5 7.7 9.5 9.2 8 13.2 6.5 9.2 2.5 7.7 6.5 6.2z"/><path d="M12.6 11.2l.5 1.3 1.3.5-1.3.5-.5 1.3-.5-1.3-1.3-.5 1.3-.5z"/>'),
   // 关系图谱：三个节点 + 连线
   graph: svg('<circle cx="3.6" cy="11.8" r="1.8"/><circle cx="8" cy="3.8" r="1.8"/><circle cx="12.4" cy="11.8" r="1.8"/><path d="M5 10.2 7 5.6M9 5.6l2 4.6M5.4 11.8h5.2"/>'),
   clock: svg('<circle cx="8" cy="8" r="6"/><path d="M8 4.6V8l2.4 1.6"/>'),
@@ -86,6 +88,8 @@ export interface ShellHandlers {
   onInspectorWidth(width: number): void;
   /** 重启本地服务（网页里的「刷新服务」按钮） */
   onRestartService(): void;
+  /** 打开 AI 辅助写作 */
+  onAiAssist(): void;
   onToggleFocus(): void;
   onProjectMenu(anchor: HTMLElement): void;
   onOpenCommandPalette(): void;
@@ -249,6 +253,14 @@ export function createShell(root: HTMLElement, opts: ShellOptions): ShellHandle 
    * 重启服务：改了服务端代码、或界面莫名不对时，不用回终端。
    * 点了之后会断开连接、几秒后自动刷新页面。
    */
+  const aiBtn = h('button', {
+    class: 'icon-btn',
+    title: 'AI 辅助写作',
+    'aria-label': 'AI 辅助写作',
+    html: ICONS.ai,
+    onclick: () => handlers.onAiAssist(),
+  });
+
   const restartBtn = h('button', {
     class: 'icon-btn',
     title: '重启服务',
@@ -270,7 +282,7 @@ export function createShell(root: HTMLElement, opts: ShellOptions): ShellHandle 
     { class: 'topbar' },
     h('div', { class: 'topbar-left' }, sidebarBtn, projectChip),
     h('div', { class: 'topbar-center' }, searchBtn),
-    h('div', { class: 'topbar-right' }, goalMini, saveInd, restartBtn, graphBtn, focusBtn, inspectorBtn),
+    h('div', { class: 'topbar-right' }, goalMini, saveInd, aiBtn, restartBtn, graphBtn, focusBtn, inspectorBtn),
   );
 
   // ── 侧栏 ──

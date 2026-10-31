@@ -1335,6 +1335,99 @@ async function main() {
       await page.waitForTimeout(800);
     });
 
+    // ─────────── 【11】关系图面板展开 + AI 接入（本次新增） ───────────
+
+    console.log('\n【11】关系图面板展开与 AI 接入');
+
+    await check('关系图面板：画布撑满高度、节点不挤在角落', async () => {
+      await page.locator('.inspector-tabs button[data-panel="graph"]').click();
+      await page.waitForTimeout(2400);
+
+      const geo = await page.evaluate(() => {
+        const c = document.querySelector('.p-graph-canvas');
+        const r = c.getBoundingClientRect();
+        return { cssW: Math.round(r.width), cssH: Math.round(r.height) };
+      });
+      assert(geo.cssH >= 300, `画布高度不足（${geo.cssH}px），节点会挤在一起`);
+
+      // 画布上绘制的像素应分布在较大范围内，而不是只剩角落一个点
+      const spread = await page.evaluate(() => {
+        const c = document.querySelector('.p-graph-canvas');
+        const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+        let minX = 1e9, maxX = -1, minY = 1e9, maxY = -1, n = 0;
+        const W = c.width;
+        for (let i = 0; i < d.length; i += 4) {
+          if (d[i + 3] > 20) {
+            const p = i / 4, x = p % W, y = Math.floor(p / W);
+            if (x < minX) minX = x; if (x > maxX) maxX = x;
+            if (y < minY) minY = y; if (y > maxY) maxY = y;
+            n++;
+          }
+        }
+        return { n, w: maxX - minX, h: maxY - minY, W: c.width, H: c.height };
+      });
+      assert(spread.n > 100, '画布几乎没有绘制内容');
+      assert(spread.w > spread.W * 0.3 || spread.h > spread.H * 0.3,
+        `绘制范围过小（${spread.w}×${spread.h}），节点可能被排到了可视区之外`);
+    });
+
+    await check('关系图面板：「展开」打开全屏图谱', async () => {
+      await page.locator('.p-graph-tools .btn', { hasText: '展开' }).click();
+      await page.waitForTimeout(2200);
+      const nodes = await page.locator('.gv-node').count();
+      assert(nodes > 0, '全屏图谱没有渲染节点');
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(700);
+    });
+
+    await check('AI 未配置时给出明确引导，且不发任何请求', async () => {
+      const before = await (await fetch(`${BASE}/api/projects/${projectId}/ai`)).json();
+      assert(before.config.enabled === false, '测试项目默认应是未开启 AI');
+      assert(before.status.available === true, '适配器应已接入');
+
+      await page.locator('.topbar .icon-btn[title="AI 辅助写作"]').click();
+      await page.waitForTimeout(1000);
+      const blocked = await page.evaluate(
+        () => document.querySelector('.ai-blocked')?.textContent ?? '',
+      );
+      assert(/AI 还没准备好|尚未/.test(blocked), `应给出未配置引导，实际：${blocked.slice(0, 60)}`);
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(500);
+    });
+
+    await check('AI 预览：只构造请求不发送，内容与设置一致', async () => {
+      // 配一个假 Key 只为走通「预览」；预览是 dry_run，不会发网络
+      await fetch(`${BASE}/api/projects/${projectId}/ai`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          enabled: true,
+          provider: 'deepseek',
+          api_key: 'sk-e2e-fake-0000',
+          features: { continue: true },
+        }),
+      });
+
+      const preview = await fetch(`${BASE}/api/projects/${projectId}/ai/generate`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ feature: 'continue', prompt: '接着写', context: '前文', dry_run: true }),
+      });
+      assert(preview.status === 200, `预览应成功，实际 ${preview.status}`);
+      const data = await preview.json();
+      assert(data.preview.endpoint.includes('deepseek'), '端点不对');
+      assert(data.preview.model.length > 0, '缺少模型名');
+      assert(Array.isArray(data.preview.messages) && data.preview.messages.length >= 2, '消息不全');
+      assert(/字/.test(data.preview.description), '缺少「将发送多少字」的说明');
+
+      // 收尾：关掉 AI，避免影响后续用例或误发请求
+      await fetch(`${BASE}/api/projects/${projectId}/ai`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ enabled: false, api_key: '' }),
+      });
+    });
+
     await check('无未捕获的运行时错误', async () => {
       // 过滤掉网络类噪音（服务端某些路由可能还在开发）
       const real = consoleErrors.filter(

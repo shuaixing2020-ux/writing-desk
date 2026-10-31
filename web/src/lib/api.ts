@@ -326,6 +326,31 @@ export const api = {
 
   aiGenerate: (req: { feature: string; prompt: string; context?: string; style?: string }) =>
     post<AiResponse>(`${projectPrefix()}/ai/generate`, req),
+
+  /** 只构造请求、不发网络：用于「把将要发送的内容给作者看」 */
+  aiPreview: (req: { feature: string; prompt: string; context?: string; style?: string }) =>
+    post<{
+      preview: {
+        endpoint: string;
+        model: string;
+        provider: string;
+        description: string;
+        messages: Array<{ role: string; content: string }>;
+        temperature: number;
+        max_tokens: number;
+      };
+    }>(`${projectPrefix()}/ai/generate`, { ...req, dry_run: true }),
+
+  aiProviders: () =>
+    get<{
+      providers: Array<{
+        key: string;
+        label: string;
+        base_url: string;
+        default_model: string;
+        models: string[];
+      }>;
+    }>(`${projectPrefix()}/ai/providers`),
 };
 
 /** WebSocket 事件订阅（作业进度、树变更） */
